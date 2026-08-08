@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="570" viewBox="0 0 1000 570" role="img" aria-labelledby="title desc">
+  <title id="title">현재 모각코 API 아키텍처</title>
+  <desc id="desc">Flutter 웹과 모바일 클라이언트가 FastAPI에 연결하고, 로컬 SQLite와 Google Kakao OAuth를 사용한다.</desc>
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#344054"/></marker></defs>
+  <style>text{font-family:Arial,'Malgun Gothic',sans-serif;fill:#172b4d}.title{font-size:26px;font-weight:700}.label{font-size:17px;font-weight:700}.body{font-size:13px}.small{font-size:12px;fill:#475467}.box{stroke:#344054;stroke-width:1.5;rx:12}.planned{stroke-dasharray:6 4}.line{stroke:#344054;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+  <text x="42" y="48" class="title">모각코 API — 개발 및 확정 배포 구성</text>
+  <text x="42" y="74" class="small">실선: 현재 개발 구성 · 점선: 스테이징·운영 배포 구성</text>
+  <rect x="42" y="130" width="190" height="130" class="box" fill="#eef4ff"/><text x="62" y="166" class="label">클라이언트</text><text x="62" y="195" class="body">Flutter 웹</text><text x="62" y="219" class="body">Flutter iOS / Android</text><text x="62" y="244" class="small">웹: GitHub Pages 배포본</text>
+  <rect x="366" y="104" width="292" height="257" class="box" fill="#ecfdf3"/><text x="390" y="143" class="label">FastAPI</text><text x="390" y="169" class="small">로컬: Uvicorn / 127.0.0.1:8000</text>
+  <rect x="391" y="192" width="105" height="58" class="box" fill="#fff"/><text x="415" y="226" class="body">auth</text>
+  <rect x="514" y="192" width="105" height="58" class="box" fill="#fff"/><text x="538" y="226" class="body">users</text>
+  <rect x="452" y="274" width="105" height="58" class="box" fill="#fff"/><text x="480" y="308" class="body">terms</text>
+  <rect x="350" y="424" width="196" height="94" class="box" fill="#fff7ed"/><text x="374" y="458" class="label">SQLite</text><text x="374" y="484" class="small">로컬 개발 DB</text><text x="374" y="505" class="small">Alembic 마이그레이션</text>
+  <rect x="570" y="424" width="176" height="94" class="box planned" fill="#f0fdf4"/><text x="593" y="458" class="label">PostgreSQL</text><text x="593" y="484" class="small">스테이징 · 운영 DB</text><text x="593" y="505" class="small">배포 예정</text>
+  <rect x="770" y="114" width="184" height="150" class="box" fill="#fdf2fa"/><text x="791" y="151" class="label">외부 OAuth</text><text x="791" y="182" class="body">Google</text><text x="791" y="211" class="body">Kakao</text><text x="791" y="241" class="small">인가 코드 흐름</text>
+  <rect x="770" y="350" width="184" height="94" class="box" fill="#f0f9ff"/><text x="791" y="387" class="label">앱 링크</text><text x="791" y="414" class="small">Universal Link / App Link</text>
+  <path d="M232 194 H366" class="line"/><text x="270" y="181" class="small">HTTPS API</text>
+  <path d="M658 181 H770" class="line"/><path d="M770 211 H658" class="line"/><text x="677" y="167" class="small">인가·사용자 조회</text>
+  <path d="M500 361 V424" class="line"/><path d="M556 361 V395 H658 V424" class="line"/><text x="528" y="399" class="small">SQLAlchemy</text>
+  <path d="M658 319 H740 V397 H770" class="line"/><text x="675" y="307" class="small">일회용 코드</text>
+  <text x="42" y="545" class="small">검증: pytest · 미완료: 공개 HTTPS 도메인과 실제 Google/Kakao 종단 간 로그인</text>
+</svg>
