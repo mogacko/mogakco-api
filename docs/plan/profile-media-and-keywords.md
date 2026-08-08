@@ -1,0 +1,68 @@
+# 프로필 이미지와 키워드 자동완성
+
+## 이미지 업로드 계약
+
+파일은 서버를 거치지 않고 클라이언트에서 S3로 바로 올라간다. 그래서 검증은 업로드가 끝난 뒤에 한다.
+
+1. `POST /images/upload-url` — `content_type`(`image/jpeg`·`image/png`·`image/webp`)을 받아 `PENDING` 에셋을 만들고 presigned POST를 돌려준다. 정책에 `content-length-range`를 담아 용량 초과는 S3가 거절한다.
+2. 클라이언트가 `upload_url`에 `fields`를 붙여 multipart POST로 올린다.
+3. `POST /images/{asset_id}/complete` — 서버가 S3에서 앞 512바이트만 `Range`로 받아 파일 시그니처를 확인한다. 통과하면 `READY`, 아니면 S3 객체와 행을 지우고 422 "이미지 파일이 아닙니다."를 반환한다.
+
+확장자와 `Content-Type`은 위조할 수 있으므로 신뢰하지 않는다. JPEG·PNG는 앞 바이트로, WEBP는 RIFF 컨테이너라 `[0:4]`와 `[8:12]`를 함께 본다.
+
+`users.profile_image_url`은 `profile_image_asset_id` 외래 키로 바뀌었다. 검증이 끝난 본인 소유 에셋만 붙일 수 있고, 응답의 `profile_image_url`은 에셋에서 읽어 내려준다. 업로드에 인증이 필요하므로 가입 요청에서는 이미지를 받지 않는다. 가입 후 `PATCH /me`로 연결한다.
+
+## 자동완성 계약
+
+`GET /keywords/suggest?kind=FIELD|STACK|INTEREST&prefix=&limit=` — 접두사로 찾고 많이 쓰인 순으로 돌려준다.
+
+프로필의 분야·스택·관심분야는 콤마로 나누고 공백을 정리해 `user_keywords`에 사용자 단위로 펼쳐 둔다. 소문자로 맞춰 저장하므로 `React`·`react`·`REACT`는 한 키워드로 합쳐진다. 노출 기준은 **서로 다른 사용자 5명 이상**이다. 한 사람이 여러 번 저장해도 행이 하나라 기준을 넘지 못한다.
+
+## 구현 체크리스트
+
+- [x] `media_assets`, `user_keywords` 표와 마이그레이션 `20260809_0003` (up·down 모두 SQLite에서 확인)
+- [x] presigned POST 발급, `Range` 검증, 실패 시 S3 객체 정리
+- [x] `users.profile_image_asset_id` 전환과 소유·상태 검증
+- [x] 가입·프로필 수정 시 키워드 동기화
+- [x] 참조 없는 이미지 정리 배치 `app.images.cleanup` (DB 행과 S3 객체를 함께 지움)
+- [x] 단위 테스트: 시그니처 판별, 5명 기준, 콤마 분리, 대소문자 통합, 와일드카드 이스케이프
+
+## 검증 결과
+
+테스트는 기본이 인메모리 SQLite이고, `TEST_DATABASE_URL`을 주면 같은 스위트가 PostgreSQL에서 돈다.
+
+```
+docker run -d --name mogakco-pg-test -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=mogakco_test -p 55432:5432 postgres:16-alpine
+TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:55432/mogakco_test uv run pytest
+```
+
+PostgreSQL 16에서 확인한 것:
+
+- 스위트 20개 통과, 마이그레이션 `upgrade head` → `downgrade base` → 재적용까지 성공
+- `alembic check`로 모델과 마이그레이션 사이 드리프트 없음
+- `users` ↔ `media_assets` 순환 외래 키가 `ON DELETE SET NULL`로 생성됨. 에셋을 지우면 프로필에서 실제로 떨어진다
+- 사용자를 지우면 에셋과 키워드가 `CASCADE`로 함께 지워진다
+- `status`·`kind` `CHECK`와 `(user_id, kind, keyword)` 유니크가 실제로 거절한다
+
+S3는 `botocore.stub.Stubber`로 대역을 세워 요청 파라미터(`Bucket`·`Key`·`Range`)까지 확인했다. 테스트가 실제로 잡는지 보려고 시그니처 검사, 삭제 호출, 소유 검증, 정규화, 노출 기준 등 11군데를 일부러 깨뜨려 전부 실패하는 것을 확인했다.
+
+**SQLite의 `LIKE`는 기본이 대소문자 무시라 PostgreSQL과 다르다.** 검색어 정규화가 빠져도 SQLite에서는 통과해 버리므로, 테스트 픽스처에서 `PRAGMA case_sensitive_like = ON`으로 기준을 맞춘다.
+
+## 남은 검증
+
+실제 S3 버킷으로 발급 → 업로드 → 완료 검증 종단 간 확인. 스텁으로는 다음을 확인할 수 없다.
+
+- presigned POST 정책을 S3가 실제로 받아주는지. `Conditions` 형식이 틀리면 모든 업로드가 403이 된다
+- `content-length-range`로 용량 초과가 실제로 거절되는지
+- IAM 권한 세 가지와 웹 클라이언트용 CORS
+- 실제 `ContentRange` 응답 형식
+
+버킷 설정은 [이미지 버킷 운영](../operations/media-bucket.md)에 정리했다. 앱과 웹을 모두 지원하므로 CORS가 필요하다.
+
+## 보류한 것
+
+- **Redis 캐시** — 사용자 수천 명 규모에서 인덱스 조회로 충분하다. 조회가 실제로 느려지면 그때 넣는다.
+- **자동완성 시드 목록** — 초기에는 5명 기준을 넘는 키워드가 없어 결과가 비어 있다. 감수하기로 했다.
+- **사용처 표(`asset_usages`)** — 지금 이미지를 쓰는 곳이 프로필뿐이다. 행사 썸네일 같은 두 번째 사용처가 생기면 추가한다.
+- **해시 중복 제거** — 중복 이미지가 실제로 쌓이면 검토한다. S3 E-태그는 멀티파트 업로드에서 MD5가 아니므로 그대로 쓸 수 없다.
+- **CDN 도메인 확정** — 에셋의 `url`이 `S3_PUBLIC_BASE_URL`로 만들어져 DB에 저장된다. 나중에 바꾸면 이미 저장된 URL과 어긋나므로 버킷을 만들기 전에 정해야 한다.

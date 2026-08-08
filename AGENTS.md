@@ -15,5 +15,7 @@
 - `docs/decisions/planning-documents.md`: 계획·완료 문서 관리 규칙
 - `docs/plan/social-auth.md`: 소셜 인증 API 계약
 - `docs/plan/social-auth-implementation.md`: 구현 상태와 남은 검증
+- `docs/plan/profile-media-and-keywords.md`: 이미지 업로드·검증과 키워드 자동완성
 - `docs/operations/app-links.md`: Universal Link/App Link 운영 설정
+- `docs/operations/media-bucket.md`: 이미지 버킷 CORS·IAM·수명 주기 설정
 - `docs/complete/README.md`: 완료 문서 보관 기준
