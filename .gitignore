@@ -1,0 +1,9 @@
+.venv/
+.idea/
+*.db
+__pycache__/
+*.py[cod]
+.env
+.env.local
+.env.staging
+.env.production
