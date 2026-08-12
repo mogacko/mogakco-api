@@ -66,17 +66,6 @@ def upgrade() -> None:
     op.create_index("ix_login_codes_user_id", "login_codes", ["user_id"])
     op.create_index("ix_login_codes_expires_at", "login_codes", ["expires_at"])
     op.create_table(
-        "oauth_attempts",
-        sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("provider", sa.String(length=10), nullable=False),
-        sa.Column("state_hash", sa.String(length=64), nullable=False, unique=True),
-        sa.Column("code_verifier", sa.String(length=128), nullable=False),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
-        sa.CheckConstraint("provider IN ('GOOGLE', 'KAKAO')", name="ck_oauth_attempts_provider"),
-    )
-    op.create_index("ix_oauth_attempts_expires_at", "oauth_attempts", ["expires_at"])
-    op.create_table(
         "terms",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("code", sa.String(length=20), nullable=False, unique=True),
@@ -116,8 +105,6 @@ def downgrade() -> None:
     op.drop_index("ix_term_versions_term_id", table_name="term_versions")
     op.drop_table("term_versions")
     op.drop_table("terms")
-    op.drop_index("ix_oauth_attempts_expires_at", table_name="oauth_attempts")
-    op.drop_table("oauth_attempts")
     op.drop_index("ix_login_codes_expires_at", table_name="login_codes")
     op.drop_index("ix_login_codes_user_id", table_name="login_codes")
     op.drop_table("login_codes")

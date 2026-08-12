@@ -42,16 +42,3 @@ class LoginCode(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-
-class OAuthAttempt(Base):
-    __tablename__ = "oauth_attempts"
-    __table_args__ = (
-        CheckConstraint("provider IN ('GOOGLE', 'KAKAO')", name="ck_oauth_attempts_provider"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    provider: Mapped[str] = mapped_column(String(10))
-    state_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    code_verifier: Mapped[str] = mapped_column(String(128))
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

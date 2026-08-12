@@ -109,6 +109,8 @@ def test_google_social_login_returns_signup_code_or_tokens_and_rejects_wrong_aud
         "/auth/social-login",
         json={"provider": "GOOGLE", "id_token": _google_token(private_key, "wrong-client-id")},
     ).status_code == 401
+    assert test_client.get("/auth/google/authorize").status_code == 404
+    assert test_client.get("/auth/google/callback").status_code == 404
 
 
 def test_apple_social_login_validates_identity_token_and_nonce(client):
