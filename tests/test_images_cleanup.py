@@ -6,9 +6,9 @@ from botocore.stub import Stubber
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.images.cleanup import delete_orphan_assets
+from app.images.cleanup import delete_orphan_assets, find_orphan_assets
 from app.images.config import StorageSettings
-from app.images.model import MediaAsset
+from app.images.model import PROFILE, AssetUsage, MediaAsset
 from app.users.model import User
 
 BUCKET = "mogakco-media-test"
@@ -66,6 +66,10 @@ def add_user(db: Session, nickname: str) -> User:
     return user
 
 
+def use_as_profile(db: Session, user: User, asset: MediaAsset) -> None:
+    db.add(AssetUsage(asset_id=asset.id, usage_type=PROFILE, usage_id=user.id))
+
+
 def expect_delete(stubber: Stubber, *keys: str) -> None:
     stubber.add_response(
         "delete_objects",
@@ -83,7 +87,7 @@ def test_removes_abandoned_and_unreferenced_assets(db, settings, s3):
     add_asset(db, user, "images/never-uploaded.png", "PENDING", age_hours=48)
     replaced = add_asset(db, user, "images/old-profile.png", "READY", age_hours=48)
     current = add_asset(db, user, "images/current-profile.png", "READY", age_hours=48)
-    user.profile_image_asset_id = current.id
+    use_as_profile(db, user, current)
     db.commit()
 
     # 참조가 끊긴 것만, 오래된 순이 아니라 조회 순서대로 지운다.
@@ -92,6 +96,18 @@ def test_removes_abandoned_and_unreferenced_assets(db, settings, s3):
 
     assert remaining_keys(db) == ["images/current-profile.png"]
     assert replaced.key not in remaining_keys(db)
+
+
+def test_dry_run_lists_targets_without_touching_s3(db, settings, s3):
+    user = add_user(db, "hannah")
+    add_asset(db, user, "images/orphan.png", "READY", age_hours=48)
+    kept = add_asset(db, user, "images/in-use.png", "READY", age_hours=48)
+    use_as_profile(db, user, kept)
+    db.commit()
+
+    # S3 스텁에 응답을 넣지 않았다. 삭제를 시도하면 여기서 실패한다.
+    assert [asset.key for asset in find_orphan_assets(db)] == ["images/orphan.png"]
+    assert remaining_keys(db) == ["images/in-use.png", "images/orphan.png"]
 
 
 def test_keeps_recent_uploads_not_yet_attached(db, settings, s3):
@@ -121,7 +137,7 @@ def test_keeps_assets_referenced_by_other_users(db, settings, s3):
     owner = add_user(db, "hannah")
     other = add_user(db, "someone-else")
     shared = add_asset(db, owner, "images/shared.png", "READY", age_hours=48)
-    other.profile_image_asset_id = shared.id
+    use_as_profile(db, other, shared)
     db.commit()
 
     assert delete_orphan_assets(db, settings) == 0

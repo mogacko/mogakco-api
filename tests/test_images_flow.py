@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.auth.config import TokenSettings
 from app.auth.token import create_access_token
 from app.db import get_db
-from app.images.model import MediaAsset
+from app.images.model import PROFILE, AssetUsage, MediaAsset
 from app.keywords.model import UserKeyword
 from app.main import app
 from app.users.model import User
@@ -34,6 +34,8 @@ def client(engine, monkeypatch: pytest.MonkeyPatch):
         with Session(engine) as session:
             yield session
 
+    # 저장 후 캐시 갱신은 자기 세션을 열므로 테스트 엔진으로 돌린다.
+    monkeypatch.setattr("app.db.SessionLocal", lambda: Session(engine))
     app.dependency_overrides[get_db] = override_db
     yield TestClient(app), engine
     app.dependency_overrides.clear()
@@ -184,6 +186,63 @@ def test_profile_accepts_own_ready_asset_only(client, s3):
     attached = test_client.patch("/me", json={"profile_image_asset_id": pending["asset_id"]}, headers=owner_headers)
     assert attached.status_code == 200, attached.text
     assert attached.json()["profile_image_url"].startswith("https://cdn.example.com/images/")
+
+
+def ready_asset(test_client: TestClient, engine, s3: Stubber, headers: dict) -> int:
+    uploaded = request_upload(test_client, headers)
+    stub_head(s3, key_of(engine, uploaded["asset_id"]), PNG, 2048)
+    test_client.post(f"/images/{uploaded['asset_id']}/complete", headers=headers)
+    return uploaded["asset_id"]
+
+
+def usages(engine, user_id: int) -> list[int]:
+    with Session(engine) as db:
+        return db.scalars(
+            select(AssetUsage.asset_id).where(AssetUsage.usage_type == PROFILE, AssetUsage.usage_id == user_id)
+        ).all()
+
+
+def test_replacing_profile_image_leaves_one_usage(client, s3):
+    test_client, engine = client
+    user_id, headers = make_user(engine, "hannah")
+    first = ready_asset(test_client, engine, s3, headers)
+    second = ready_asset(test_client, engine, s3, headers)
+
+    test_client.patch("/me", json={"profile_image_asset_id": first}, headers=headers)
+    assert usages(engine, user_id) == [first]
+
+    # 자리당 한 장이다. 갈아끼워도 행이 쌓이지 않는다.
+    replaced = test_client.patch("/me", json={"profile_image_asset_id": second}, headers=headers)
+    assert replaced.status_code == 200, replaced.text
+    assert usages(engine, user_id) == [second]
+
+
+def test_clearing_profile_image_removes_the_usage(client, s3):
+    test_client, engine = client
+    user_id, headers = make_user(engine, "hannah")
+    asset_id = ready_asset(test_client, engine, s3, headers)
+    test_client.patch("/me", json={"profile_image_asset_id": asset_id}, headers=headers)
+
+    cleared = test_client.patch("/me", json={"profile_image_asset_id": None}, headers=headers)
+
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["profile_image_url"] is None
+    assert usages(engine, user_id) == []
+
+
+def test_deleting_the_asset_detaches_the_profile(client, s3):
+    test_client, engine = client
+    user_id, headers = make_user(engine, "hannah")
+    asset_id = ready_asset(test_client, engine, s3, headers)
+    test_client.patch("/me", json={"profile_image_asset_id": asset_id}, headers=headers)
+
+    with Session(engine) as db:
+        db.delete(db.get(MediaAsset, asset_id))
+        db.commit()
+
+    # 사용처 행이 CASCADE로 함께 사라져 프로필에서도 떨어진다.
+    assert usages(engine, user_id) == []
+    assert test_client.get("/me", headers=headers).json()["profile_image_url"] is None
 
 
 def test_profile_update_syncs_keywords(client, s3):
