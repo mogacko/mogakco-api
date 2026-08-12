@@ -1,0 +1,20 @@
+[Unit]
+Description=모각코 고아 이미지 정리
+Documentation=file:///srv/mogakco/docs/operations/media-bucket.md
+# 도커가 준비된 뒤에 돈다. 부팅 직후 Persistent 실행이 도커보다 앞서지 않게 한다.
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/mogakco
+
+# --rm 으로 컨테이너를 남기지 않는다. 웹 컨테이너가 떠 있든 말든 상관없이 돈다.
+# --no-deps 는 일부러 안 붙였다. Persistent=true 로 부팅 직후 따라잡을 때 DB 컨테이너가
+# 아직 안 떠 있을 수 있는데, 그때 붙어 있으면 연결 실패로 끝난다. 이미 떠 있으면 compose가
+# 다시 띄우지 않으므로 손해도 없다. 서비스 이름(api)은 compose 파일과 맞춘다.
+ExecStart=/usr/bin/docker compose run --rm api python -m app.images.cleanup
+
+# 배치가 남긴 "지운 이미지 N개"가 그대로 journal에 쌓인다.
+StandardOutput=journal
+StandardError=journal
