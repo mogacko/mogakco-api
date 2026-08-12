@@ -24,6 +24,6 @@ app.include_router(images_router)
 app.include_router(keywords_router)
 
 
-@app.get("/health")
+@app.get("/health", summary="헬스 체크")
 def health() -> dict[str, bool]:
     return {"ok": True}
