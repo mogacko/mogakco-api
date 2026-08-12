@@ -8,21 +8,7 @@
 
 ## CORS
 
-웹 클라이언트가 `fetch`로 S3에 직접 POST한다. 이 설정이 없으면 브라우저가 요청을 막는다. 네이티브 앱은 CORS를 타지 않아 영향이 없다.
-
-```json
-[
-  {
-    "AllowedOrigins": ["https://mogakco.example.com"],
-    "AllowedMethods": ["POST"],
-    "AllowedHeaders": ["*"],
-    "ExposeHeaders": ["ETag", "Location"],
-    "MaxAgeSeconds": 3000
-  }
-]
-```
-
-`AllowedOrigins`에는 실제 웹 도메인을 넣는다. 로컬 개발용 `http://localhost:*`가 필요하면 개발 버킷에만 추가한다.
+설정하지 않는다. 클라이언트가 Flutter Android·iOS 앱뿐이라 업로드가 브라우저를 거치지 않고, 네이티브 요청은 CORS를 타지 않는다. 웹을 다시 지원하게 되면 그때 `AllowedOrigins`에 웹 도메인을 넣어 추가한다.
 
 ## IAM
 
@@ -72,13 +58,15 @@ uv run python -m app.images.cleanup
 
 `POST /images/upload-url` 응답의 `fields`를 폼에 그대로 넣고 **파일을 맨 마지막에 붙인다.** S3는 정책 필드보다 앞에 온 파일을 거절한다.
 
-```js
-const form = new FormData();
-Object.entries(fields).forEach(([name, value]) => form.append(name, value));
-form.append("file", file); // 반드시 마지막
+```dart
+final req = http.MultipartRequest('POST', Uri.parse(uploadUrl))
+  ..fields.addAll(fields.cast<String, String>())
+  ..files.add(await http.MultipartFile.fromPath('file', path)); // 반드시 마지막
 
-await fetch(uploadUrl, { method: "POST", body: form });
-await fetch(`/images/${assetId}/complete`, { method: "POST", headers: authHeader });
+await req.send();
+await http.post(Uri.parse('$apiBase/images/$assetId/complete'), headers: authHeader);
 ```
+
+`package:http`의 `MultipartRequest`는 `fields`를 모두 쓴 뒤 `files`를 쓰므로 순서가 저절로 맞는다. Dio의 `FormData`를 쓴다면 `fields`를 먼저 넣고 파일 항목을 나중에 넣어야 한다.
 
 성공 시 S3는 본문 없이 204를 준다. 업로드가 끝나도 `complete`를 부르기 전에는 `PENDING`이라 프로필에 붙일 수 없다.

@@ -54,10 +54,10 @@ S3는 `botocore.stub.Stubber`로 대역을 세워 요청 파라미터(`Bucket`·
 
 - presigned POST 정책을 S3가 실제로 받아주는지. `Conditions` 형식이 틀리면 모든 업로드가 403이 된다
 - `content-length-range`로 용량 초과가 실제로 거절되는지
-- IAM 권한 세 가지와 웹 클라이언트용 CORS
+- IAM 권한 세 가지
 - 실제 `ContentRange` 응답 형식
 
-버킷 설정은 [이미지 버킷 운영](../operations/media-bucket.md)에 정리했다. 앱과 웹을 모두 지원하므로 CORS가 필요하다.
+버킷 설정은 [이미지 버킷 운영](../operations/media-bucket.md)에 정리했다. 클라이언트가 Flutter Android·iOS 앱뿐이라 CORS는 설정하지 않는다.
 
 ## 보류한 것
 

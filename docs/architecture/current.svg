@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="570" viewBox="0 0 1000 570" role="img" aria-labelledby="title desc">
   <title id="title">현재 모각코 API 아키텍처</title>
-  <desc id="desc">Flutter 웹과 모바일 클라이언트가 FastAPI에 연결하고, 로컬 SQLite와 Google Kakao OAuth를 사용한다.</desc>
+  <desc id="desc">Flutter Android·iOS 앱이 FastAPI에 연결하고, 로컬 SQLite와 Google Kakao OAuth를 사용한다.</desc>
   <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#344054"/></marker></defs>
   <style>text{font-family:Arial,'Malgun Gothic',sans-serif;fill:#172b4d}.title{font-size:26px;font-weight:700}.label{font-size:17px;font-weight:700}.body{font-size:13px}.small{font-size:12px;fill:#475467}.box{stroke:#344054;stroke-width:1.5;rx:12}.planned{stroke-dasharray:6 4}.line{stroke:#344054;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
   <text x="42" y="48" class="title">모각코 API — 개발 및 확정 배포 구성</text>
   <text x="42" y="74" class="small">실선: 현재 개발 구성 · 점선: 스테이징·운영 배포 구성</text>
-  <rect x="42" y="130" width="190" height="130" class="box" fill="#eef4ff"/><text x="62" y="166" class="label">클라이언트</text><text x="62" y="195" class="body">Flutter 웹</text><text x="62" y="219" class="body">Flutter iOS / Android</text><text x="62" y="244" class="small">웹: GitHub Pages 배포본</text>
+  <rect x="42" y="130" width="190" height="130" class="box" fill="#eef4ff"/><text x="62" y="166" class="label">클라이언트</text><text x="62" y="195" class="body">Flutter Android / iOS</text><text x="62" y="219" class="small">네이티브 앱만 지원</text><text x="62" y="244" class="small">웹 클라이언트 없음</text>
   <rect x="366" y="104" width="292" height="257" class="box" fill="#ecfdf3"/><text x="390" y="143" class="label">FastAPI</text><text x="390" y="169" class="small">로컬: Uvicorn / 127.0.0.1:8000</text>
   <rect x="391" y="192" width="105" height="58" class="box" fill="#fff"/><text x="415" y="226" class="body">auth</text>
   <rect x="514" y="192" width="105" height="58" class="box" fill="#fff"/><text x="538" y="226" class="body">users</text>
