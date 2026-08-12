@@ -12,11 +12,119 @@
 
 `users.profile_image_url`은 `profile_image_asset_id` 외래 키로 바뀌었다. 검증이 끝난 본인 소유 에셋만 붙일 수 있고, 응답의 `profile_image_url`은 에셋에서 읽어 내려준다. 업로드에 인증이 필요하므로 가입 요청에서는 이미지를 받지 않는다. 가입 후 `PATCH /me`로 연결한다.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Flutter 앱
+    participant API as FastAPI
+    participant DB as PostgreSQL
+    participant S3
+
+    Note over App,S3: 1단계 — 업로드 URL 발급
+
+    App->>API: POST /images/upload-url<br/>{content_type} + Bearer
+    activate API
+    alt content_type이 jpeg/png/webp가 아님
+        API-->>App: 422 "이미지 파일이 아닙니다."
+    else 허용 타입
+        API->>DB: INSERT media_assets<br/>key=images/{uuid}.{ext}, status=PENDING
+        Note right of API: generate_presigned_post는 로컬 서명이라<br/>S3 호출이 아니다<br/>Conditions: Content-Type,<br/>content-length-range 1..max_bytes
+        API-->>App: {asset_id, upload_url, fields}
+    end
+    deactivate API
+
+    Note over App,S3: 2단계 — 클라이언트가 S3로 직접 업로드
+
+    App->>S3: POST multipart<br/>fields 전부 → file 마지막
+    activate S3
+    alt 정책 위반 (타입 불일치 / 용량 초과)
+        S3-->>App: 403
+    else 통과
+        S3-->>App: 204 No Content
+    end
+    deactivate S3
+
+    Note over App,S3: 3단계 — 서버가 실제 파일을 검증
+
+    App->>API: POST /images/{asset_id}/complete + Bearer
+    activate API
+    API->>DB: SELECT media_assets WHERE id
+    alt 없음 또는 owner_id ≠ 요청자
+        API-->>App: 404 "업로드를 찾을 수 없습니다."
+    else 이미 READY
+        API-->>App: 200 (멱등, 재검증 없음)
+    else PENDING
+        API->>S3: GET Object Range: bytes=0-511
+        alt 객체 없음 (ClientError)
+            S3-->>API: NoSuchKey
+            API-->>App: 409 "업로드된 파일이 없습니다."
+        else 앞 512바이트 수신
+            S3-->>API: 206 + head bytes + ContentRange
+            Note right of API: 매직 넘버 검사<br/>JPEG FF D8 FF / PNG 89 50 4E 47…<br/>WEBP는 RIFF + 8~12바이트 "WEBP"
+            alt 시그니처 불일치
+                API->>S3: DeleteObject
+                API->>DB: DELETE media_assets
+                API-->>App: 422 "이미지 파일이 아닙니다."
+            else 이미지 확인
+                API->>DB: UPDATE status=READY,<br/>size_bytes=ContentRange 총 크기
+                API-->>App: 200 {id, url, status}
+            end
+        end
+    end
+    deactivate API
+
+    Note over App,S3: 4단계 — 프로필에 연결
+
+    App->>API: PATCH /users/me<br/>{profile_image_asset_id}
+    API->>DB: SELECT media_assets
+    alt owner_id ≠ 본인 또는 status ≠ READY
+        API-->>App: 422 "사용할 수 없는 이미지입니다."
+    else
+        API->>DB: UPDATE users.profile_image_asset_id
+        API-->>App: 200 프로필
+    end
+```
+
 ## 자동완성 계약
 
 `GET /keywords/suggest?kind=FIELD|STACK|INTEREST&prefix=&limit=` — 접두사로 찾고 많이 쓰인 순으로 돌려준다.
 
 프로필의 분야·스택·관심분야는 콤마로 나누고 공백을 정리해 `user_keywords`에 사용자 단위로 펼쳐 둔다. 소문자로 맞춰 저장하므로 `React`·`react`·`REACT`는 한 키워드로 합쳐진다. 노출 기준은 **서로 다른 사용자 5명 이상**이다. 한 사람이 여러 번 저장해도 행이 하나라 기준을 넘지 못한다.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Flutter 앱
+    participant API as FastAPI
+    participant DB as PostgreSQL
+
+    Note over App,DB: 쓰기 — 프로필 저장 시 사용자 단위로 펼쳐 기록
+
+    App->>API: PATCH /users/me<br/>{field, stack, interests, …}
+    activate API
+    Note right of API: exclude_unset — 요청에 담겨 온<br/>항목만 다시 기록한다
+    loop field→FIELD, stack→STACK, interests→INTEREST
+        Note right of API: 콤마 분리 → 공백 정리 → 100자 컷<br/>소문자 키로 중복 제거<br/>keyword=소문자, display=원본 표기
+        API->>DB: DELETE user_keywords<br/>WHERE user_id AND kind
+        API->>DB: INSERT user_keywords (재기록)
+    end
+    API->>DB: COMMIT (프로필 수정과 한 트랜잭션)
+    API-->>App: 200 프로필
+    deactivate API
+
+    Note over App,DB: 읽기 — 조회 시점에 집계 (인증 불필요)
+
+    App->>API: GET /keywords/suggest<br/>?kind=STACK&prefix=py&limit=10
+    activate API
+    Note right of API: prefix도 공백 정리 + 소문자<br/>startswith(autoescape) — %, _ 이스케이프
+    API->>DB: SELECT max(display)<br/>WHERE kind AND keyword LIKE 'py%'<br/>GROUP BY keyword<br/>HAVING count(*) >= 5<br/>ORDER BY count(*) DESC, keyword<br/>LIMIT 10
+    Note right of DB: 행이 사용자당 1개라<br/>count(*) = 서로 다른 사용자 수<br/>5명 미만 키워드는 노출 안 함
+    DB-->>API: ["Python", "PyTorch"]
+    API-->>App: 200 ["Python", "PyTorch"]
+    deactivate API
+```
+
+별도 카운트 컬럼을 두지 않고 조회할 때마다 집계한다. 동기화가 어긋날 자리가 없다. 한계와 업그레이드 경로는 `app/keywords/service.py`의 `ponytail:` 주석에 적어 뒀다.
 
 ## 구현 체크리스트
 
