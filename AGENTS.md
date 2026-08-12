@@ -23,6 +23,6 @@
 
 - `docs/plan/`: 진행 중인 계획. 작업과 맞는 문서가 있으면 함께 읽는다
 - `docs/complete/`: 완료된 기능의 계약과 검증 결과. 기존 동작을 확인할 때 본다
-- `docs/operations/`: 운영 절차. 버킷·캐시·앱 링크·주기 실행 설정
+- `docs/operations/`: 운영 절차. 버킷·캐시·주기 실행 설정
 - `docs/architecture/current.svg`: 현재 구성도 (편집 원본은 같은 폴더의 `.drawio`)
 - `deploy/systemd/`: 미니PC용 주기 실행 유닛 파일
