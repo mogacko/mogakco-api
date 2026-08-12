@@ -9,6 +9,7 @@ dependencies = [
     "pyjwt>=2.9",
     "psycopg[binary]>=3.2",
     "sqlalchemy>=2.0",
+    "redis>=5",
 ]
 
 [dependency-groups]

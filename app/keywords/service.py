@@ -1,10 +1,9 @@
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from app.keywords import cache
+from app.keywords.cache import MIN_USERS  # noqa: F401  노출 기준은 집계하는 쪽에 둔다
 from app.keywords.model import UserKeyword
-
-# 이 인원 이상이 쓴 키워드만 자동완성에 노출한다. 소수만 쓴 값이 드러나지 않게 하는 기준이다.
-MIN_USERS = 5
 
 # 프로필 필드명 -> 키워드 종류
 KINDS = {"field": "FIELD", "stack": "STACK", "interests": "INTEREST"}
@@ -35,19 +34,11 @@ def sync_keywords(db: Session, user_id: int, values: dict) -> None:
 
 
 def suggest(db: Session, kind: str, prefix: str, limit: int) -> list[str]:
-    # ponytail: 조회할 때마다 집계한다. 사용자 수천 명 규모에서는 인덱스 스캔으로 충분하고,
-    # 느려지면 그때 집계 결과를 별도 표나 캐시에 둔다.
-    users = func.count()
-    # 표기는 그 키워드를 쓴 사용자들의 표기 중 하나다. 대소문자는 구분하지 않기로 했으므로 굳이 고르지 않는다.
-    rows = db.execute(
-        select(func.max(UserKeyword.display))
-        .where(
-            UserKeyword.kind == kind,
-            UserKeyword.keyword.startswith(" ".join(prefix.split()).lower(), autoescape=True),
-        )
-        .group_by(UserKeyword.keyword)
-        .having(users >= MIN_USERS)
-        .order_by(users.desc(), UserKeyword.keyword)
-        .limit(limit)
-    ).all()
-    return [display for (display,) in rows]
+    """캐시된 목록에서 접두사로 고른다. 캐시가 없으면 PostgreSQL에서 다시 집계한다."""
+    entries = cache.load(kind)
+    if entries is None:
+        # 미스면 재집계하면서 캐시도 채운다. Redis가 죽었으면 집계 결과만 받아 쓴다.
+        entries = cache.rebuild(db, [kind])[kind]
+    # 목록은 이미 (사용자 수 내림차순, 키워드순)으로 정렬돼 있다.
+    normalized = " ".join(prefix.split()).lower()
+    return [display for keyword, display in entries if keyword.startswith(normalized)][:limit]
