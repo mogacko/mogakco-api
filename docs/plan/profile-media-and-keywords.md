@@ -75,7 +75,7 @@ sequenceDiagram
 
     Note over App,S3: 4단계 — 프로필에 연결
 
-    App->>API: PATCH /users/me<br/>{profile_image_asset_id}
+    App->>API: PATCH /me<br/>{profile_image_asset_id}
     API->>DB: SELECT media_assets
     alt owner_id ≠ 본인 또는 status ≠ READY
         API-->>App: 422 "사용할 수 없는 이미지입니다."
@@ -100,7 +100,7 @@ sequenceDiagram
 
     Note over App,DB: 쓰기 — 프로필 저장 시 사용자 단위로 펼쳐 기록
 
-    App->>API: PATCH /users/me<br/>{field, stack, interests, …}
+    App->>API: PATCH /me<br/>{field, stack, interests, …}
     activate API
     Note right of API: exclude_unset — 요청에 담겨 온<br/>항목만 다시 기록한다
     loop field→FIELD, stack→STACK, interests→INTEREST
