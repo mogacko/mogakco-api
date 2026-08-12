@@ -1,6 +1,5 @@
 import os
 from dataclasses import dataclass
-from urllib.parse import urlparse
 
 
 class SettingsError(ValueError):
@@ -25,22 +24,11 @@ def _positive_int(name: str) -> int:
     return parsed
 
 
-def _https_url(name: str) -> str:
-    value = _required(name).rstrip("/")
-    parsed = urlparse(value)
-    if parsed.scheme != "https" or not parsed.netloc or parsed.params or parsed.query or parsed.fragment:
-        raise SettingsError(f"{name}은 경로·쿼리 없는 HTTPS URL이어야 합니다.")
-    return value
-
-
-def _api_base_url() -> str:
-    name = "AUTH_API_BASE_URL"
-    value = _required(name).rstrip("/")
-    parsed = urlparse(value)
-    local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
-    if (parsed.scheme != "https" and not local_http) or not parsed.netloc or parsed.params or parsed.query or parsed.fragment:
-        raise SettingsError(f"{name}은 HTTPS URL 또는 localhost HTTP URL이어야 합니다.")
-    return value
+def _csv(name: str) -> tuple[str, ...]:
+    values = tuple(value.strip() for value in _required(name).split(",") if value.strip())
+    if not values:
+        raise SettingsError(f"{name}에는 하나 이상의 값이 필요합니다.")
+    return values
 
 
 @dataclass(frozen=True)
@@ -62,45 +50,28 @@ class TokenSettings:
 
 
 @dataclass(frozen=True)
-class CallbackSettings:
-    api_base_url: str
-    app_link_base_url: str
+class GoogleNativeSettings:
+    oauth_client_ids: tuple[str, ...]
 
     @classmethod
-    def from_env(cls) -> "CallbackSettings":
-        return cls(
-            api_base_url=_api_base_url(),
-            app_link_base_url=_https_url("AUTH_APP_LINK_BASE_URL"),
-        )
+    def from_env(cls) -> "GoogleNativeSettings":
+        return cls(oauth_client_ids=_csv("GOOGLE_OAUTH_CLIENT_IDS"))
 
 
 @dataclass(frozen=True)
-class ProviderSettings:
-    google_client_id: str
-    google_client_secret: str
-    kakao_client_id: str
-    kakao_client_secret: str
+class AppleNativeSettings:
+    client_ids: tuple[str, ...]
 
     @classmethod
-    def from_env(cls) -> "ProviderSettings":
-        return cls(
-            google_client_id=_required("GOOGLE_CLIENT_ID"),
-            google_client_secret=_required("GOOGLE_CLIENT_SECRET"),
-            kakao_client_id=_required("KAKAO_CLIENT_ID"),
-            kakao_client_secret=_required("KAKAO_CLIENT_SECRET"),
-        )
+    def from_env(cls) -> "AppleNativeSettings":
+        return cls(client_ids=_csv("APPLE_CLIENT_IDS"))
 
 
 @dataclass(frozen=True)
-class AuthSettings:
-    token: TokenSettings
-    callback: CallbackSettings
-    providers: ProviderSettings
+class KakaoNativeSettings:
+    native_app_key: str
 
     @classmethod
-    def from_env(cls) -> "AuthSettings":
-        return cls(
-            token=TokenSettings.from_env(),
-            callback=CallbackSettings.from_env(),
-            providers=ProviderSettings.from_env(),
-        )
+    def from_env(cls) -> "KakaoNativeSettings":
+        return cls(native_app_key=_required("KAKAO_NATIVE_APP_KEY"))
+

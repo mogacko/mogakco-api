@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="700" viewBox="0 0 1000 700" role="img" aria-labelledby="title desc">
   <title id="title">현재 모각코 API 아키텍처</title>
-  <desc id="desc">Flutter Android·iOS 앱이 FastAPI에 연결한다. FastAPI는 auth, users, terms, images, keywords 모듈로 이루어지고 로컬 SQLite와 Google Kakao OAuth를 사용한다. 이미지는 앱이 S3에 직접 올리고, 자동완성 집계는 Redis에 사본으로 둔다.</desc>
+  <desc id="desc">Flutter Android·iOS 앱이 FastAPI에 연결한다. FastAPI는 auth, users, terms, images, keywords 모듈로 이루어지고 로컬 SQLite와 Google Apple Kakao ID token 검증을 사용한다. 이미지는 앱이 S3에 직접 올리고, 자동완성 집계는 Redis에 사본으로 둔다.</desc>
   <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#344054"/></marker></defs>
   <style>text{font-family:Arial,'Malgun Gothic',sans-serif;fill:#172b4d}.title{font-size:26px;font-weight:700}.label{font-size:17px;font-weight:700}.body{font-size:13px}.c{text-anchor:middle}.small{font-size:12px;fill:#475467}.box{stroke:#344054;stroke-width:1.5;rx:12}.planned{stroke-dasharray:6 4}.line{stroke:#344054;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke-dasharray:6 4}</style>
   <text x="42" y="48" class="title">모각코 API — 개발 및 확정 배포 구성</text>
@@ -20,18 +20,16 @@
   <rect x="350" y="380" width="196" height="94" class="box" fill="#fff7ed"/><text x="374" y="414" class="label">SQLite</text><text x="374" y="440" class="small">로컬 개발 DB</text><text x="374" y="461" class="small">Alembic 마이그레이션</text>
   <rect x="570" y="380" width="176" height="94" class="box planned" fill="#f0fdf4"/><text x="593" y="414" class="label">PostgreSQL</text><text x="593" y="440" class="small">스테이징 · 운영 DB</text><text x="593" y="461" class="small">모든 원본 데이터</text>
 
-  <rect x="770" y="114" width="184" height="140" class="box" fill="#fdf2fa"/><text x="791" y="151" class="label">외부 OAuth</text><text x="791" y="182" class="body">Google</text><text x="791" y="211" class="body">Kakao</text><text x="791" y="241" class="small">인가 코드 흐름</text>
-  <rect x="770" y="286" width="184" height="76" class="box" fill="#f0f9ff"/><text x="791" y="320" class="label">앱 링크</text><text x="791" y="345" class="small">Universal Link / App Link</text>
+  <rect x="770" y="114" width="184" height="140" class="box" fill="#fdf2fa"/><text x="791" y="151" class="label">외부 ID token</text><text x="791" y="182" class="body">Google · Apple · Kakao</text><text x="791" y="211" class="small">JWKS 서명·claim 검증</text>
   <rect x="770" y="396" width="184" height="110" class="box planned" fill="#fffbeb"/><text x="791" y="433" class="label">S3</text><text x="791" y="459" class="small">이미지 원본</text><text x="791" y="481" class="small">presigned POST · 버킷 생성 예정</text>
 
   <path d="M232 194 H366" class="line"/><text x="270" y="181" class="small">HTTPS API</text>
-  <path d="M658 165 H770" class="line"/><path d="M770 200 H658" class="line"/><text x="672" y="152" class="small">인가·사용자 조회</text>
-  <path d="M658 300 H714 V324 H770" class="line"/><text x="664" y="292" class="small">일회용 코드</text>
+  <path d="M658 165 H770" class="line"/><text x="672" y="152" class="small">JWKS 검증</text>
   <path d="M448 328 V380" class="line"/><text x="458" y="352" class="small">SQLAlchemy</text>
   <path d="M600 328 V352 H658 V380" class="line dash"/>
   <path d="M366 310 H167 V380" class="line dash"/><text x="196" y="302" class="small">자동완성 조회·갱신</text>
   <path d="M658 320 H758 V451 H770" class="line dash"/><text x="666" y="344" class="small">URL 발급·검증</text>
   <path d="M232 240 H310 V620 H862 V506" class="line dash"/><text x="330" y="612" class="small">이미지 직접 업로드 — 서버를 거치지 않는다</text>
 
-  <text x="42" y="672" class="small">검증: pytest · 미완료: 공개 HTTPS 도메인과 실제 Google/Kakao 종단 간 로그인, 실제 S3 버킷</text>
+  <text x="42" y="672" class="small">검증: pytest · 미완료: 실제 Google·Apple·Kakao 네이티브 로그인, 실제 S3 버킷</text>
 </svg>

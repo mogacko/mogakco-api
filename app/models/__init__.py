@@ -1,4 +1,4 @@
-from app.auth.model import AuthSession, LoginCode, OAuthAttempt, SocialAccount
+from app.auth.model import AuthSession, LoginCode, SocialAccount
 from app.images.model import AssetUsage, MediaAsset
 from app.keywords.model import UserKeyword
 from app.terms.model import Term, TermVersion, UserTermAgreement
@@ -9,7 +9,6 @@ __all__ = [
     "AuthSession",
     "LoginCode",
     "MediaAsset",
-    "OAuthAttempt",
     "SocialAccount",
     "Term",
     "TermVersion",

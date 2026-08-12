@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TokenExchangeRequest(BaseModel):
@@ -13,6 +13,20 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+
+
+class SocialLoginRequest(BaseModel):
+    provider: str
+    id_token: str
+    nonce: str | None = Field(default=None, min_length=1)
+
+
+class SocialLoginResponse(BaseModel):
+    signup_required: bool
+    code: str | None = None
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str | None = None
 
 
 class SignupRequest(BaseModel):
