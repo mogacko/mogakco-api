@@ -20,7 +20,7 @@ class SignupRequest(BaseModel):
     nickname: str
     activity_region: str
     agreed_term_version_ids: list[int]
-    profile_image_url: str | None = None
+    # 프로필 이미지는 업로드에 인증이 필요하므로 가입 후 PATCH /me로 연결한다.
     field: str | None = None
     introduction: str | None = None
     organization: str | None = None

@@ -2,29 +2,22 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from app.auth.config import TokenSettings
 from app.auth.service import create_login_code
 from app.auth.model import LoginCode
-from app.db import Base, get_db
+from app.db import get_db
 from app.main import app
 from app.terms.model import Term, TermVersion
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch):
+def client(engine, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AUTH_JWT_SECRET", "12345678901234567890123456789012")
     monkeypatch.setenv("AUTH_ACCESS_TOKEN_TTL_SECONDS", "900")
     monkeypatch.setenv("AUTH_LOGIN_CODE_TTL_SECONDS", "60")
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
 
     def override_db():
         with Session(engine) as session:
@@ -33,7 +26,6 @@ def client(monkeypatch: pytest.MonkeyPatch):
     app.dependency_overrides[get_db] = override_db
     yield TestClient(app), engine
     app.dependency_overrides.clear()
-    Base.metadata.drop_all(engine)
 
 
 def test_signup_and_token_rotation(client):

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from app.auth.service import (
     signup,
 )
 from app.db import get_db
+from app.keywords.cache import refresh_after_save
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -54,10 +55,11 @@ def post_token(request: TokenExchangeRequest, db: Session = Depends(get_db)) -> 
 
 
 @router.post("/signup", response_model=TokenResponse, summary="소셜 계정 가입 완료")
-def post_signup(request: SignupRequest, db: Session = Depends(get_db)) -> TokenResponse:
+def post_signup(request: SignupRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> TokenResponse:
     """필수 약관 동의와 프로필을 저장한 뒤 로그인 토큰을 발급합니다."""
     values = request.model_dump(exclude={"code", "agreed_term_version_ids"})
     access_token, refresh_token = signup(db, request.code, values, request.agreed_term_version_ids, TokenSettings.from_env())
+    background_tasks.add_task(refresh_after_save)
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
 

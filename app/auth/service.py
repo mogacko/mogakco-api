@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.auth.config import AuthSettings, TokenSettings
 from app.auth.model import AuthSession, LoginCode, OAuthAttempt, SocialAccount
 from app.auth.token import create_access_token
+from app.keywords.service import sync_keywords
 from app.terms.service import current_term_versions
 from app.users.model import User
 
@@ -154,6 +155,7 @@ def signup(db: Session, code: str, values: dict, term_version_ids: list[int], se
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="이미 연결된 소셜 계정입니다.")
     user = User(**values)
     db.add(user); db.flush()
+    sync_keywords(db, user.id, values)
     db.add(SocialAccount(user_id=user.id, provider=login_code.provider, provider_user_id=login_code.provider_user_id))
     from app.terms.model import UserTermAgreement
     for version_id in set(term_version_ids):

@@ -22,7 +22,7 @@ class UserResponse(BaseModel):
 class UserUpdateRequest(BaseModel):
     nickname: str | None = Field(default=None, min_length=1, max_length=30)
     activity_region: str | None = None
-    profile_image_url: str | None = Field(default=None, max_length=2048)
+    profile_image_asset_id: int | None = None
     field: str | None = Field(default=None, max_length=100)
     introduction: str | None = None
     organization: str | None = Field(default=None, max_length=100)
