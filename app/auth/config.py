@@ -78,6 +78,24 @@ class GoogleNativeSettings:
 
 
 @dataclass(frozen=True)
+class AppleNativeSettings:
+    client_ids: tuple[str, ...]
+
+    @classmethod
+    def from_env(cls) -> "AppleNativeSettings":
+        return cls(client_ids=_csv("APPLE_CLIENT_IDS"))
+
+
+@dataclass(frozen=True)
+class KakaoNativeSettings:
+    native_app_key: str
+
+    @classmethod
+    def from_env(cls) -> "KakaoNativeSettings":
+        return cls(native_app_key=_required("KAKAO_NATIVE_APP_KEY"))
+
+
+@dataclass(frozen=True)
 class CallbackSettings:
     api_base_url: str
     app_link_base_url: str

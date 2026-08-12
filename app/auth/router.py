@@ -2,7 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.auth.config import AuthSettings, GoogleNativeSettings, TokenSettings
+from app.auth.config import AppleNativeSettings, AuthSettings, GoogleNativeSettings, KakaoNativeSettings, TokenSettings
 from app.auth.schemas import RefreshRequest, SignupRequest, SocialLoginRequest, SocialLoginResponse, TokenExchangeRequest, TokenResponse
 from app.auth.service import (
     authorization_url,
@@ -11,7 +11,9 @@ from app.auth.service import (
     create_oauth_attempt,
     exchange_login_code,
     find_social_user_id,
+    apple_user_id,
     google_user_id,
+    kakao_user_id,
     logout,
     provider_user_id,
     refresh_tokens,
@@ -24,12 +26,19 @@ from app.keywords.cache import refresh_after_save
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/social-login", response_model=SocialLoginResponse, summary="Google 네이티브 로그인")
+@router.post("/social-login", response_model=SocialLoginResponse, summary="네이티브 소셜 로그인")
 def post_social_login(request: SocialLoginRequest, db: Session = Depends(get_db)) -> SocialLoginResponse:
-    if request.provider != "GOOGLE":
+    if request.provider == "GOOGLE":
+        provider_user_id = google_user_id(request.id_token, GoogleNativeSettings.from_env())
+    elif request.provider == "APPLE":
+        provider_user_id = apple_user_id(request.id_token, AppleNativeSettings.from_env(), request.nonce)
+    elif request.provider == "KAKAO":
+        if request.nonce is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Kakao 로그인에는 nonce가 필요합니다.")
+        provider_user_id = kakao_user_id(request.id_token, request.nonce, KakaoNativeSettings.from_env())
+    else:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="지원하지 않는 소셜 로그인 제공자입니다.")
-    provider_user_id = google_user_id(request.id_token, GoogleNativeSettings.from_env())
-    tokens, code = social_login(db, "GOOGLE", provider_user_id, TokenSettings.from_env())
+    tokens, code = social_login(db, request.provider, provider_user_id, TokenSettings.from_env())
     if code is not None:
         return SocialLoginResponse(signup_required=True, code=code)
     assert tokens is not None

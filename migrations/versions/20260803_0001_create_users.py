@@ -39,7 +39,7 @@ def upgrade() -> None:
         sa.Column("provider", sa.String(length=10), nullable=False),
         sa.Column("provider_user_id", sa.String(length=255), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("CURRENT_TIMESTAMP"), nullable=False),
-        sa.CheckConstraint("provider IN ('GOOGLE', 'KAKAO')", name="ck_social_accounts_provider"),
+        sa.CheckConstraint("provider IN ('GOOGLE', 'APPLE', 'KAKAO')", name="ck_social_accounts_provider"),
         sa.UniqueConstraint("provider", "provider_user_id", name="uq_social_accounts_provider_user"),
     )
     op.create_index("ix_social_accounts_user_id", "social_accounts", ["user_id"])

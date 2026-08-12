@@ -9,7 +9,7 @@ from app.db import Base
 class SocialAccount(Base):
     __tablename__ = "social_accounts"
     __table_args__ = (
-        CheckConstraint("provider IN ('GOOGLE', 'KAKAO')", name="ck_social_accounts_provider"),
+        CheckConstraint("provider IN ('GOOGLE', 'APPLE', 'KAKAO')", name="ck_social_accounts_provider"),
         UniqueConstraint("provider", "provider_user_id", name="uq_social_accounts_provider_user"),
     )
 

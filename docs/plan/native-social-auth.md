@@ -65,6 +65,18 @@ Apple은 identity token을 반환하며, 이름·이메일은 최초 승인 응�
 - [ ] Flutter Google 로그인에서 backend용 Web client ID로 ID token을 받아 실제 API에 연결.
 - [ ] Google Cloud 콘솔 client ID를 `GOOGLE_OAUTH_CLIENT_IDS`로 배포 환경에 주입하고 Android·iOS 실기기 로그인 확인.
 
+## Kakao API 진행 상태
+
+- [x] `POST /auth/social-login`의 `provider=KAKAO` 구현: Kakao JWKS·`RS256`·issuer·Native app key audience·만료·`sub`·필수 nonce 검증.
+- [x] 첫 로그인 단회 가입 코드와 가입 완료 계정 토큰 발급 검증.
+- [ ] Kakao Developers에서 OpenID Connect를 활성화하고 `KAKAO_NATIVE_APP_KEY`를 배포 환경에 주입한 뒤 Android·iOS 실기기 로그인을 확인.
+
+## Apple API 진행 상태
+
+- [x] `POST /auth/social-login`의 `provider=APPLE` 구현: Apple JWKS·`RS256`·issuer·iOS bundle ID/Android Service ID audience·만료·`sub`·전달된 nonce 검증.
+- [x] 신규 계정 가입 코드와 기존 계정 토큰 발급을 Apple에도 적용.
+- [ ] Apple Developer 값을 `APPLE_CLIENT_IDS`로 배포 환경에 주입하고 iOS·Android 실기기 로그인을 확인.
+
 ## API 테스트와 배포 검증
 
 - [ ] JWK fixture로 각 공급자의 유효 JWT가 가입 완료 계정에는 Mogakco 토큰, 첫 로그인에는 단회 가입 코드를 주는지 확인한다.

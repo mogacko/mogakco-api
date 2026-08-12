@@ -12,7 +12,7 @@ from jwt.exceptions import InvalidTokenError, PyJWKClientConnectionError, PyJWKC
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth.config import AuthSettings, GoogleNativeSettings, TokenSettings
+from app.auth.config import AppleNativeSettings, AuthSettings, GoogleNativeSettings, KakaoNativeSettings, TokenSettings
 from app.auth.model import AuthSession, LoginCode, OAuthAttempt, SocialAccount
 from app.auth.token import create_access_token
 from app.keywords.service import sync_keywords
@@ -21,6 +21,8 @@ from app.users.model import User
 
 
 _google_jwks = jwt.PyJWKClient("https://www.googleapis.com/oauth2/v3/certs", cache_keys=True)
+_apple_jwks = jwt.PyJWKClient("https://appleid.apple.com/auth/keys", cache_keys=True)
+_kakao_jwks = jwt.PyJWKClient("https://kauth.kakao.com/.well-known/jwks.json", cache_keys=True)
 
 
 def _hash(value: str) -> str:
@@ -104,6 +106,48 @@ def google_user_id(id_token: str, settings: GoogleNativeSettings) -> str:
     subject = claims["sub"]
     if not isinstance(subject, str) or not subject:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 Google ID token입니다.")
+    return subject
+
+
+def apple_user_id(id_token: str, settings: AppleNativeSettings, nonce: str | None = None) -> str:
+    try:
+        signing_key = _apple_jwks.get_signing_key_from_jwt(id_token)
+        claims = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=settings.client_ids,
+            issuer="https://appleid.apple.com",
+            options={"require": ["aud", "exp", "iss", "sub"]},
+        )
+    except PyJWKClientConnectionError as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="소셜 로그인을 잠시 사용할 수 없습니다.") from error
+    except (InvalidTokenError, PyJWKClientError) as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 Apple ID token입니다.") from error
+    subject = claims["sub"]
+    if not isinstance(subject, str) or not subject or (nonce is not None and claims.get("nonce") not in {nonce, _hash(nonce)}):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 Apple ID token입니다.")
+    return subject
+
+
+def kakao_user_id(id_token: str, nonce: str, settings: KakaoNativeSettings) -> str:
+    try:
+        signing_key = _kakao_jwks.get_signing_key_from_jwt(id_token)
+        claims = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=settings.native_app_key,
+            issuer="https://kauth.kakao.com",
+            options={"require": ["aud", "exp", "iss", "nonce", "sub"]},
+        )
+    except PyJWKClientConnectionError as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="소셜 로그인을 잠시 사용할 수 없습니다.") from error
+    except (InvalidTokenError, PyJWKClientError) as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 Kakao ID token입니다.") from error
+    subject = claims["sub"]
+    if claims["nonce"] != nonce or not isinstance(subject, str) or not subject:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 Kakao ID token입니다.")
     return subject
 
 

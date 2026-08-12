@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TokenExchangeRequest(BaseModel):
@@ -18,6 +18,7 @@ class TokenResponse(BaseModel):
 class SocialLoginRequest(BaseModel):
     provider: str
     id_token: str
+    nonce: str | None = Field(default=None, min_length=1)
 
 
 class SocialLoginResponse(BaseModel):
