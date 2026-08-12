@@ -4,18 +4,23 @@ import base64
 from urllib.parse import urlencode
 
 import httpx
+import jwt
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
+from jwt.exceptions import InvalidTokenError, PyJWKClientConnectionError, PyJWKClientError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth.config import AuthSettings, TokenSettings
+from app.auth.config import AuthSettings, GoogleNativeSettings, TokenSettings
 from app.auth.model import AuthSession, LoginCode, OAuthAttempt, SocialAccount
 from app.auth.token import create_access_token
 from app.keywords.service import sync_keywords
 from app.terms.service import current_term_versions
 from app.users.model import User
+
+
+_google_jwks = jwt.PyJWKClient("https://www.googleapis.com/oauth2/v3/certs", cache_keys=True)
 
 
 def _hash(value: str) -> str:
@@ -81,6 +86,27 @@ def find_social_user_id(db: Session, provider: str, external_user_id: str) -> in
     return db.scalar(select(SocialAccount.user_id).where(SocialAccount.provider == provider, SocialAccount.provider_user_id == external_user_id))
 
 
+def google_user_id(id_token: str, settings: GoogleNativeSettings) -> str:
+    try:
+        signing_key = _google_jwks.get_signing_key_from_jwt(id_token)
+        claims = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=settings.oauth_client_ids,
+            issuer=["accounts.google.com", "https://accounts.google.com"],
+            options={"require": ["aud", "exp", "iss", "sub"]},
+        )
+    except PyJWKClientConnectionError as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="소셜 로그인 확인을 잠시 사용할 수 없습니다.") from error
+    except (InvalidTokenError, PyJWKClientError) as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 Google ID token입니다.") from error
+    subject = claims["sub"]
+    if not isinstance(subject, str) or not subject:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 Google ID token입니다.")
+    return subject
+
+
 def create_login_code(db: Session, user_id: int | None, settings: TokenSettings, provider: str | None = None, provider_user_id: str | None = None) -> str:
     code = secrets.token_urlsafe(32)
     db.add(
@@ -94,6 +120,15 @@ def create_login_code(db: Session, user_id: int | None, settings: TokenSettings,
     )
     db.commit()
     return code
+
+
+def social_login(db: Session, provider: str, provider_user_id: str, settings: TokenSettings) -> tuple[tuple[str, str] | None, str | None]:
+    user_id = find_social_user_id(db, provider, provider_user_id)
+    if user_id is None:
+        return None, create_login_code(db, None, settings, provider, provider_user_id)
+    tokens = _issue_tokens(db, user_id, settings)
+    db.commit()
+    return tokens, None
 
 
 def _issue_tokens(db: Session, user_id: int, settings: TokenSettings) -> tuple[str, str]:

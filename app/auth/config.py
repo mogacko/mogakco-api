@@ -25,6 +25,13 @@ def _positive_int(name: str) -> int:
     return parsed
 
 
+def _csv(name: str) -> tuple[str, ...]:
+    values = tuple(value.strip() for value in _required(name).split(",") if value.strip())
+    if not values:
+        raise SettingsError(f"{name}에는 하나 이상의 값이 필요합니다.")
+    return values
+
+
 def _https_url(name: str) -> str:
     value = _required(name).rstrip("/")
     parsed = urlparse(value)
@@ -59,6 +66,15 @@ class TokenSettings:
             access_token_ttl_seconds=_positive_int("AUTH_ACCESS_TOKEN_TTL_SECONDS"),
             login_code_ttl_seconds=_positive_int("AUTH_LOGIN_CODE_TTL_SECONDS"),
         )
+
+
+@dataclass(frozen=True)
+class GoogleNativeSettings:
+    oauth_client_ids: tuple[str, ...]
+
+    @classmethod
+    def from_env(cls) -> "GoogleNativeSettings":
+        return cls(oauth_client_ids=_csv("GOOGLE_OAUTH_CLIENT_IDS"))
 
 
 @dataclass(frozen=True)

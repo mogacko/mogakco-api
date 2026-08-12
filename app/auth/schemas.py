@@ -15,6 +15,19 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class SocialLoginRequest(BaseModel):
+    provider: str
+    id_token: str
+
+
+class SocialLoginResponse(BaseModel):
+    signup_required: bool
+    code: str | None = None
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str | None = None
+
+
 class SignupRequest(BaseModel):
     code: str
     nickname: str

@@ -2,8 +2,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.auth.config import AuthSettings, TokenSettings
-from app.auth.schemas import RefreshRequest, SignupRequest, TokenExchangeRequest, TokenResponse
+from app.auth.config import AuthSettings, GoogleNativeSettings, TokenSettings
+from app.auth.schemas import RefreshRequest, SignupRequest, SocialLoginRequest, SocialLoginResponse, TokenExchangeRequest, TokenResponse
 from app.auth.service import (
     authorization_url,
     consume_oauth_attempt,
@@ -11,15 +11,30 @@ from app.auth.service import (
     create_oauth_attempt,
     exchange_login_code,
     find_social_user_id,
+    google_user_id,
     logout,
     provider_user_id,
     refresh_tokens,
+    social_login,
     signup,
 )
 from app.db import get_db
 from app.keywords.cache import refresh_after_save
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.post("/social-login", response_model=SocialLoginResponse, summary="Google 네이티브 로그인")
+def post_social_login(request: SocialLoginRequest, db: Session = Depends(get_db)) -> SocialLoginResponse:
+    if request.provider != "GOOGLE":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="지원하지 않는 소셜 로그인 제공자입니다.")
+    provider_user_id = google_user_id(request.id_token, GoogleNativeSettings.from_env())
+    tokens, code = social_login(db, "GOOGLE", provider_user_id, TokenSettings.from_env())
+    if code is not None:
+        return SocialLoginResponse(signup_required=True, code=code)
+    assert tokens is not None
+    access_token, refresh_token = tokens
+    return SocialLoginResponse(signup_required=False, access_token=access_token, refresh_token=refresh_token, token_type="bearer")
 
 
 @router.get("/{provider}/authorize", summary="소셜 로그인 시작")
