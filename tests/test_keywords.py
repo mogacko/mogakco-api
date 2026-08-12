@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth.config import TokenSettings
@@ -65,6 +65,43 @@ def test_cleared_field_removes_keywords(db):
     sync_keywords(db, 1, {"interests": None})
     db.commit()
     assert suggest(db, "INTEREST", "사이드", 10) == []
+
+
+def test_separator_variants_merge_into_one_keyword(db):
+    for index, typed in enumerate(["Spring Boot", "SPRINGBOOT", "spring-boot", "Spring_Boot", "spring.boot"]):
+        add_user(db, f"user{index}", stack=typed)
+
+    # 다섯 명이 제각각 쳤지만 한 키워드다. 기준을 넘어 노출된다.
+    assert len(suggest(db, "STACK", "spring", 10)) == 1
+    assert db.scalar(select(func.count()).select_from(UserKeyword).where(UserKeyword.keyword == "springboot")) == 5
+
+
+def test_prefix_with_separator_still_matches(db):
+    for index in range(MIN_USERS):
+        add_user(db, f"user{index}", stack="Spring Boot")
+
+    # 검색어도 같은 규칙으로 정규화한다.
+    for typed in ("spring b", "spring-b", "springb", "Spring Boot"):
+        assert suggest(db, "STACK", typed, 10) == ["Spring Boot"], typed
+
+
+def test_meaningful_symbols_are_kept_apart(db):
+    for index in range(MIN_USERS):
+        add_user(db, f"c{index}", stack="C")
+        add_user(db, f"sharp{index}", stack="C#")
+        add_user(db, f"plus{index}", stack="C++")
+
+    # 특수문자를 전부 지웠다면 셋 다 c로 뭉쳐 하나만 남는다.
+    assert sorted(suggest(db, "STACK", "c", 10)) == ["C", "C#", "C++"]
+
+
+def test_separator_only_input_is_dropped(db):
+    for index in range(MIN_USERS):
+        add_user(db, f"user{index}", stack="---, Go")
+
+    # 키가 비면 아무 접두사에나 걸리므로 아예 저장하지 않는다.
+    assert db.scalars(select(UserKeyword.keyword).where(UserKeyword.keyword == "")).all() == []
+    assert suggest(db, "STACK", "", 10) == ["Go"]
 
 
 def test_prefix_wildcards_are_escaped(db):

@@ -116,11 +116,19 @@ sequenceDiagram
 
 `GET /keywords/suggest?kind=FIELD|STACK|INTEREST&prefix=&limit=` — 접두사로 찾고 많이 쓰인 순으로 돌려준다.
 
-프로필의 분야·스택·관심분야는 콤마로 나누고 공백을 정리해 `user_keywords`에 사용자 단위로 펼쳐 둔다. 소문자로 맞춰 저장하므로 `React`·`react`·`REACT`는 한 키워드로 합쳐진다. 노출 기준은 **서로 다른 사용자 5명 이상**이다. 한 사람이 여러 번 저장해도 행이 하나라 기준을 넘지 못한다.
+프로필의 분야·스택·관심분야는 콤마로 나눠 `user_keywords`에 사용자 단위로 펼쳐 둔다. 노출 기준은 **서로 다른 사용자 5명 이상**이다. 한 사람이 여러 번 저장해도 행이 하나라 기준을 넘지 못한다.
+
+키는 소문자로 맞추고 **구분자(공백·`-`·`_`·`.`)를 지운다.** `Spring Boot`·`SPRINGBOOT`·`spring-boot`·`Spring_Boot`·`spring.boot`가 모두 `springboot` 하나로 모인다. 화면에 보여줄 표기(`display`)는 사용자가 친 그대로 남긴다.
+
+**특수문자를 전부 지우지는 않는다.** 그러면 `C`·`C#`·`C++`가 셋 다 `c`가 되어 버린다. 개발 키워드에서 `#`와 `+`는 뜻이 있다.
+
+검색어도 같은 규칙으로 정규화한다. 그래야 `spring b`가 `springboot`를 찾는다. 구분자만 있는 입력(`---`)은 키가 비어 아무 접두사에나 걸리므로 저장하지 않는다.
 
 임계값 5, 접두사 매칭, 사용자 수 내림차순 정렬, 개수 1~20(기본 10)으로 확정한다. 전부 값만 바꾸면 되는 것들이라 바뀌면 그때 고친다.
 
-**초기에는 결과가 비어 있다.** 서로 다른 5명이 철자까지 똑같이 쳐야 노출이 시작되는데, 정규화가 대소문자와 공백만 맞춰 주므로 `Spring Boot`·`SpringBoot`·`스프링부트`는 서로 다른 키워드다. 롱테일 키워드는 기준을 오래 못 넘길 수 있다. 감수한다.
+**초기에는 결과가 비어 있다.** 서로 다른 5명을 넘겨야 노출이 시작된다. 구분자를 지워 표기 차이는 상당 부분 흡수하지만 **언어가 다르면 못 합친다.** `Spring Boot`와 `스프링부트`는 문자열 규칙으로 이어지지 않는다. 롱테일 키워드는 기준을 오래 못 넘길 수 있다. 감수한다.
+
+한글·영문 별칭은 별칭 표가 있어야 풀린다. 지금 만들면 안 쓰이는 별칭만 쌓이므로, 실제로 갈린 쌍이 데이터에 보이면 그때 넣는다. 그전까지는 둘 다 각각 기준을 넘으면 둘 다 노출된다. 자동완성 목록이 차면 사용자가 기존 표기를 골라 저절로 수렴하는 힘도 있다.
 
 조회는 Redis에서 한다. `user_keywords`는 그대로 원본으로 두고, 노출 대상 집계만 kind별 키 하나에 사본으로 담는다. 정상 상태에서는 자동완성이 PostgreSQL을 조회하지 않는다.
 
@@ -140,7 +148,7 @@ sequenceDiagram
     activate API
     Note right of API: exclude_unset — 요청에 담겨 온 항목만 다시 기록한다
     loop field→FIELD, stack→STACK, interests→INTEREST
-        Note right of API: 콤마 분리 → 공백 정리 → 100자 컷<br/>소문자 키로 중복 제거<br/>keyword=소문자, display=원본 표기
+        Note right of API: 콤마 분리 → 공백 정리 → 100자 컷<br/>keyword=소문자에서 구분자 제거 (springboot)<br/>display=사용자가 친 그대로 (Spring Boot)
         API->>DB: DELETE + INSERT user_keywords
     end
     API->>DB: COMMIT (프로필 수정과 한 트랜잭션)
@@ -187,7 +195,7 @@ sequenceDiagram
 - [x] 참조 없는 이미지 정리 배치 `app.images.cleanup` (DB 행과 S3 객체를 함께 지움, `--dry-run`으로 대상만 확인 가능)
 - [x] 미니PC용 systemd 타이머 `deploy/systemd/` (실행은 미검증 — Linux 장비에서 확인 필요)
 - [x] 자동완성 Redis 캐시 `app.keywords.cache` (저장 후 백그라운드 갱신, 미스·장애 시 PostgreSQL 폴백, 재구축 커맨드)
-- [x] 단위 테스트: 시그니처 판별, 5명 기준, 콤마 분리, 대소문자 통합, 접두사에 섞인 와일드카드 문자, 캐시 적중·미스·장애
+- [x] 단위 테스트: 시그니처 판별, 5명 기준, 콤마 분리, 구분자 정규화와 `C#`·`C++` 보존, 접두사에 섞인 와일드카드 문자, 캐시 적중·미스·장애
 
 ## 검증 결과
 
@@ -200,7 +208,7 @@ TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:55432/mogakco
 
 PostgreSQL 16에서 확인한 것:
 
-- 스위트 35개 통과, 마이그레이션 `upgrade head` → `downgrade base` → 재적용까지 성공
+- 스위트 39개 통과, 마이그레이션 `upgrade head` → `downgrade base` → 재적용까지 성공
 - `--dry-run`이 S3 자격 증명 없이 고아만 골라낸다. 사용 중인 이미지는 목록에 안 나온다
 - `alembic check`로 모델과 마이그레이션 사이 드리프트 없음
 - `0004`가 기존 프로필 사진을 사용처 행으로 옮긴다. 사진이 없던 사용자는 행이 생기지 않고, `downgrade`하면 컬럼 값이 그대로 돌아온다
