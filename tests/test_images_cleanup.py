@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.images.cleanup import delete_orphan_assets, find_orphan_assets
 from app.images.config import StorageSettings
-from app.images.model import PROFILE, AssetUsage, MediaAsset
+from app.images.model import PROFILE, MediaAsset, MediaUsage
 from app.users.model import User
 
 BUCKET = "mogakco-media-test"
@@ -67,7 +67,7 @@ def add_user(db: Session, nickname: str) -> User:
 
 
 def use_as_profile(db: Session, user: User, asset: MediaAsset) -> None:
-    db.add(AssetUsage(asset_id=asset.id, usage_type=PROFILE, usage_id=user.id))
+    db.add(MediaUsage(asset_id=asset.id, usage_type=PROFILE, usage_id=user.id))
 
 
 def expect_delete(stubber: Stubber, *keys: str) -> None:

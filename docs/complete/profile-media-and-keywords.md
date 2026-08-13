@@ -14,18 +14,20 @@
 
 ## 사용처 표
 
-에셋이 어디에 붙어 있는지는 `asset_usages`가 갖는다. 프로필 컬럼(`users.profile_image_asset_id`)은 없앴다.
+에셋이 어디에 붙어 있는지는 `media_usages`가 갖는다. 프로필 컬럼(`users.profile_image_asset_id`)은 없앴다.
 
 ```
-asset_usages(asset_id, usage_type, usage_id)
+media_usages(asset_id, usage_type, usage_id)
     UNIQUE (usage_type, usage_id)          자리당 이미지 한 장
     asset_id → media_assets ON DELETE CASCADE
 ```
 
 `usage_id`는 대상 행의 기본 키다. 대상 표가 여럿(`users`, 나중에 행사 등)이라 **외래 키를 걸 수 없다.** 그 대가로 정리 배치가 사용처 종류를 몰라도 된다.
 
+표 이름은 `media_assets`에 맞춰 `media_usages`지만 **컬럼은 `asset_id` 그대로다.** `usage_id`가 이미 대상 쪽 이름이라 이미지 쪽에 쓸 수 없고, `asset_id`는 가리키는 표의 기본 키 이름을 따른다.
+
 ```python
-referenced = select(AssetUsage.asset_id)   # 새 사용처가 생겨도 그대로다
+referenced = select(MediaUsage.asset_id)   # 새 사용처가 생겨도 그대로다
 ```
 
 이게 표를 둔 이유다. 컬럼 방식에서는 사용처를 추가하는 사람이 `cleanup.py`의 참조 판단을 같이 고쳐야 했고, 잊으면 **아직 쓰는 이미지가 조용히 지워졌다.**
@@ -107,7 +109,7 @@ sequenceDiagram
     alt owner_id ≠ 본인 또는 status ≠ READY
         API-->>App: 422 "사용할 수 없는 이미지입니다."
     else
-        API->>DB: DELETE + INSERT asset_usages<br/>(PROFILE, user_id) 자리를 갈아끼운다
+        API->>DB: DELETE + INSERT media_usages<br/>(PROFILE, user_id) 자리를 갈아끼운다
         API-->>App: 200 프로필
     end
 ```
@@ -188,7 +190,7 @@ sequenceDiagram
 ## 구현 체크리스트
 
 - [x] `media_assets`, `user_keywords` 표와 마이그레이션 `20260809_0003` (up·down 모두 SQLite에서 확인)
-- [x] `asset_usages` 표와 마이그레이션 `20260813_0004` (기존 프로필 사진 이관 포함, PostgreSQL에서 up·down 확인)
+- [x] `media_usages` 표와 마이그레이션 `20260813_0004` (기존 프로필 사진 이관 포함, PostgreSQL에서 up·down 확인)
 - [x] presigned POST 발급, `Range` 검증, 실패 시 S3 객체 정리
 - [x] 프로필 사진 연결과 소유·상태 검증
 - [x] 가입·프로필 수정 시 키워드 동기화

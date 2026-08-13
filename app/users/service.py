@@ -2,7 +2,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.images.model import PROFILE, AssetUsage, MediaAsset
+from app.images.model import PROFILE, MediaAsset, MediaUsage
 from app.keywords.service import sync_keywords
 from app.users.model import User
 from app.users.schemas import UserUpdateRequest
@@ -16,9 +16,9 @@ def _set_profile_image(db: Session, user: User, asset_id: int | None) -> None:
         asset = db.get(MediaAsset, asset_id)
         if asset is None or asset.owner_id != user.id or asset.status != "READY":
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="사용할 수 없는 이미지입니다.")
-    db.execute(delete(AssetUsage).where(AssetUsage.usage_type == PROFILE, AssetUsage.usage_id == user.id))
+    db.execute(delete(MediaUsage).where(MediaUsage.usage_type == PROFILE, MediaUsage.usage_id == user.id))
     if asset_id is not None:
-        db.add(AssetUsage(asset_id=asset_id, usage_type=PROFILE, usage_id=user.id))
+        db.add(MediaUsage(asset_id=asset_id, usage_type=PROFILE, usage_id=user.id))
     # 갈아끼운 자리를 프로퍼티가 다시 읽도록 캐시를 비운다.
     db.expire(user, ["profile_usage"])
 

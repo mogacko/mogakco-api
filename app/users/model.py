@@ -4,7 +4,7 @@ from sqlalchemy import CheckConstraint, DateTime, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.images.model import AssetUsage
+from app.images.model import MediaUsage
 
 
 class User(Base):
@@ -26,9 +26,9 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    # asset_usages.usage_id에는 외래 키가 없으므로 조인 조건을 직접 적는다.
-    profile_usage: Mapped[AssetUsage | None] = relationship(
-        primaryjoin="and_(User.id == foreign(AssetUsage.usage_id), AssetUsage.usage_type == 'PROFILE')",
+    # media_usages.usage_id에는 외래 키가 없으므로 조인 조건을 직접 적는다.
+    profile_usage: Mapped[MediaUsage | None] = relationship(
+        primaryjoin="and_(User.id == foreign(MediaUsage.usage_id), MediaUsage.usage_type == 'PROFILE')",
         viewonly=True,
         uselist=False,
         lazy="joined",

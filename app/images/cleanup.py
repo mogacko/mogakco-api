@@ -4,7 +4,7 @@
     uv run python -m app.images.cleanup --dry-run   # 지울 대상만 출력한다
 
 업로드 URL만 받고 올리지 않은 `PENDING`과, 프로필 사진을 바꿔서 참조가 끊긴 `READY`가
-모두 대상이다. 둘 다 `asset_usages`에 행이 없다는 하나로 걸리므로 상태를 따로 보지 않는다.
+모두 대상이다. 둘 다 `media_usages`에 행이 없다는 하나로 걸리므로 상태를 따로 보지 않는다.
 """
 import os
 from datetime import UTC, datetime, timedelta
@@ -13,7 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.images.config import StorageSettings
-from app.images.model import AssetUsage, MediaAsset
+from app.images.model import MediaAsset, MediaUsage
 from app.images.service import s3_client
 
 # 올린 직후 아직 프로필에 붙이기 전인 이미지를 지우지 않도록 여유를 둔다.
@@ -24,7 +24,7 @@ _S3_DELETE_LIMIT = 1000
 def find_orphan_assets(db: Session, age_hours: int = DEFAULT_AGE_HOURS) -> list[MediaAsset]:
     cutoff = datetime.now(UTC) - timedelta(hours=age_hours)
     # 사용처 종류를 몰라도 된다. 새 사용처가 생겨도 이 판단은 그대로다.
-    referenced = select(AssetUsage.asset_id)
+    referenced = select(MediaUsage.asset_id)
     return list(
         db.scalars(select(MediaAsset).where(MediaAsset.created_at < cutoff, MediaAsset.id.not_in(referenced)))
     )

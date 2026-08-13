@@ -26,19 +26,19 @@ class MediaAsset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class AssetUsage(Base):
+class MediaUsage(Base):
     """에셋이 어디에 붙어 있는지. 이 표에 행이 없는 에셋은 아무도 안 쓰는 것이다.
 
     `usage_id`는 대상 행의 기본 키다. 대상 표가 여럿이라 외래 키를 걸 수 없다. 그 대가로
     정리 배치가 사용처 종류를 몰라도 되고, 새 사용처가 생겨도 참조 판단을 고치지 않는다.
     """
 
-    __tablename__ = "asset_usages"
+    __tablename__ = "media_usages"
     __table_args__ = (
-        CheckConstraint(f"usage_type IN ({', '.join(repr(t) for t in USAGE_TYPES)})", name="ck_asset_usages_type"),
+        CheckConstraint(f"usage_type IN ({', '.join(repr(t) for t in USAGE_TYPES)})", name="ck_media_usages_type"),
         # 한 자리에는 이미지 한 장. 여러 장을 붙이는 사용처가 생기면 그때 푼다.
-        UniqueConstraint("usage_type", "usage_id", name="uq_asset_usages_slot"),
-        Index("ix_asset_usages_asset_id", "asset_id"),
+        UniqueConstraint("usage_type", "usage_id", name="uq_media_usages_slot"),
+        Index("ix_media_usages_asset_id", "asset_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

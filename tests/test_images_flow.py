@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.auth.config import TokenSettings
 from app.auth.token import create_access_token
 from app.db import get_db
-from app.images.model import PROFILE, AssetUsage, MediaAsset
+from app.images.model import PROFILE, MediaAsset, MediaUsage
 from app.keywords.model import UserKeyword
 from app.main import app
 from app.users.model import User
@@ -198,7 +198,7 @@ def ready_asset(test_client: TestClient, engine, s3: Stubber, headers: dict) -> 
 def usages(engine, user_id: int) -> list[int]:
     with Session(engine) as db:
         return db.scalars(
-            select(AssetUsage.asset_id).where(AssetUsage.usage_type == PROFILE, AssetUsage.usage_id == user_id)
+            select(MediaUsage.asset_id).where(MediaUsage.usage_type == PROFILE, MediaUsage.usage_id == user_id)
         ).all()
 
 

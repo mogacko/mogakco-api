@@ -3,7 +3,7 @@
 아키텍처 또는 애플리케이션 코드를 변경하기 전, 반드시 `docs/decisions/architecture.md`를 읽고 그 결정사항을 따른다.
 
 - 일반 CRUD에는 헥사고날 아키텍처나 `repository.py`를 추가하지 않는다. 포트·어댑터를 둘 기준은 `architecture.md`에 있다.
-- 이미지를 쓰는 기능은 `asset_usages`에 사용처 행을 남긴다. 남기지 않으면 정리 배치가 24시간 뒤 그 이미지를 지운다.
+- 이미지를 쓰는 기능은 `media_usages`에 사용처 행을 남긴다. 남기지 않으면 정리 배치가 24시간 뒤 그 이미지를 지운다.
 - 기능을 추가하거나 고치면 `tests/test_<기능>.py`에 테스트를 함께 쓴다. 표는 `conftest.py`의 `engine` 픽스처가 만든다.
 - 커밋 메시지는 영어로 쓴다. `feat(auth): add Google native sign-in`처럼 Conventional Commits 형식을 따른다.
 
