@@ -3,26 +3,11 @@ from sqlalchemy.orm import Session
 
 from app.auth.token import get_current_user
 from app.db import get_db
-from app.terms.schemas import CurrentTermResponse, MarketingConsentRequest
-from app.terms.service import current_term_versions, set_marketing_consent
+from app.terms.schemas import MarketingConsentRequest
+from app.terms.service import set_marketing_consent
 from app.users.model import User
 
 router = APIRouter(tags=["terms"])
-
-
-@router.get("/terms/current", response_model=list[CurrentTermResponse], summary="현재 약관 조회")
-def get_current_terms(db: Session = Depends(get_db)) -> list[CurrentTermResponse]:
-    return [
-        CurrentTermResponse(
-            code=term.code,
-            required=term.required,
-            version=version.version,
-            content=version.content,
-            effective_at=version.effective_at,
-        )
-        for term, version in current_term_versions(db)
-    ]
-
 
 @router.put("/me/marketing-consent", status_code=status.HTTP_204_NO_CONTENT, summary="마케팅 수신 동의 변경")
 def put_marketing_consent(

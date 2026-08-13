@@ -9,7 +9,7 @@
 | `POST /auth/social-login` | 네이티브 공급자 ID token 검증·로그인 시작 |
 | `POST /auth/signup`, `refresh`, `logout` | 가입·세션 |
 | `GET/PATCH /me` | 프로필 |
-| `GET /terms/current`, `PUT /me/marketing-consent` | 약관·동의 |
+| `PUT /me/marketing-consent` | 마케팅 수신 동의 |
 
 핵심 모델: `users`(이메일 미저장, 닉네임 유일), `social_accounts`(공급자·외부 ID 유일), `auth_sessions`(refresh 해시), 약관·약관 버전·동의 이력.
 
