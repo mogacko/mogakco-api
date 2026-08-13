@@ -23,7 +23,7 @@ keywords:v1:INTEREST
 | `REDIS_URL` | 없음 | 없으면 캐시를 쓰지 않고 PostgreSQL 집계로만 돈다 |
 | `KEYWORD_CACHE_TTL_SECONDS` | `86400` | 갱신이 한 번 유실돼도 이 시간 안에 스스로 맞춰진다 |
 
-`REDIS_URL`을 비워 두는 것은 **정상 동작**이다. 로컬 개발과 테스트가 이 상태로 돈다.
+**자동완성만 놓고 보면** `REDIS_URL`이 비어 있어도 정상 동작한다. 다만 같은 Redis에 가입 코드가 들어 있고 그쪽은 대체 경로가 없으므로, 실제 운영에서 이 값은 필수다. 자세한 것은 [소셜 인증](../complete/social-auth.md)에 있다.
 
 ## 갱신은 언제 도나
 
