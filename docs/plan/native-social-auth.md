@@ -5,7 +5,7 @@
 - Flutter Android·iOS 앱에서 Google·Apple·Kakao 로그인을 제공한다.
 - 앱이 공급자 인증을 완료한 뒤 API에 **ID token**을 HTTPS로 보내고, API는 해당 token의 검증된 `sub`만 계정 식별자로 쓴다. 공급자 access/refresh token·이메일·이름은 저장하거나 로그에 남기지 않는다.
 - **플랫폼 차이는 앱에서 끝낸다.** iOS/Android 어느 쪽이든 동일한 `POST /auth/social-login`에 같은 provider의 ID token을 보내며, API는 `provider`별 검증만 하고 OS·SDK·리다이렉트 방식을 분기하지 않는다.
-- 현재 사용자·소셜 계정 데이터는 없다. 따라서 기존 웹 OAuth 계정·콜백·앱 링크와의 호환이나 데이터 보존은 하지 않는다.
+- 현재 사용자·소셜 계정 데이터는 없다. 따라서 기존 웹 OAuth 계정·콜백과의 호환이나 데이터 보존은 하지 않는다.
 - 새 방식으로 이미 가입한 계정이 다시 로그인하면 Mogakco access·refresh token을 받고, 첫 로그인만 기존 `POST /auth/signup`에 쓸 단회 가입 코드를 받는다.
 - 이 저장소는 API만 변경한다. Flutter SDK·Apple Developer/Google Cloud/Kakao Developers 콘솔 설정은 앱 저장소/운영 작업이다.
 
@@ -41,7 +41,7 @@ Apple은 identity token을 반환하며, 이름·이메일은 최초 승인 응�
 ## API 구현 순서
 
 1. `pyproject.toml`에 `cryptography`를 추가한다. 이미 있는 PyJWT의 `PyJWKClient`로 공급자 JWKS를 조회·캐시하고 `algorithms=["RS256"]`를 고정한다. JWKS URL·허용 issuer·audience는 세 공급자 상수/환경 설정으로만 둔다. 새 포트·어댑터 계층은 만들지 않는다.
-2. `app/auth/config.py`에서 기존 OAuth callback/client-secret 설정을 `ProviderSettings`의 audience/key 설정으로 교체한다. 제거: `AUTH_API_BASE_URL`, `AUTH_APP_LINK_BASE_URL`, `GOOGLE_CLIENT_SECRET`, `KAKAO_CLIENT_SECRET`. 추가: `GOOGLE_OAUTH_CLIENT_IDS`, `APPLE_CLIENT_IDS`, `KAKAO_NATIVE_APP_KEY`.
+2. `app/auth/config.py`에서 기존 OAuth callback/client-secret 설정을 `ProviderSettings`의 audience/key 설정으로 교체한다. 제거: `AUTH_API_BASE_URL`, `GOOGLE_CLIENT_SECRET`, `KAKAO_CLIENT_SECRET`. 추가: `GOOGLE_OAUTH_CLIENT_IDS`, `APPLE_CLIENT_IDS`, `KAKAO_NATIVE_APP_KEY`.
 3. `app/auth/schemas.py`에 `SocialLoginRequest`와 두 응답 형태를 추가하고, `router.py`에 한국어 summary의 `POST /auth/social-login`을 추가한다.
 4. `service.py`에 한 개의 `verify_provider_id_token(provider, id_token, nonce, settings) -> str`를 둔다. provider별 JWKS/issuer/audience/nonce 차이만 내부 분기로 처리해, 검증된 `sub`를 반환한다. Apple은 iOS bundle ID와 Android Service ID를 동일한 `APPLE_CLIENT_IDS` audience 허용 목록으로 검증한다. raw JWT, decode된 email/name은 반환·저장하지 않는다.
 5. `find_social_user_id` 결과가 있으면 기존 `_issue_tokens`를 호출한다. 없으면 기존 `create_login_code(..., provider, sub)`를 호출한다. `signup`, refresh, logout 및 약관 로직은 그대로 둔다.
