@@ -1,13 +1,11 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.config import TokenSettings
 from app.auth.service import create_login_code
-from app.auth.model import LoginCode
 from app.db import get_db
 from app.main import app
 from app.terms.model import Term, TermVersion
@@ -28,8 +26,7 @@ def client(engine, monkeypatch: pytest.MonkeyPatch):
     app.dependency_overrides.clear()
 
 
-def test_signup_and_token_rotation(client):
-    test_client, engine = client
+def seed_required_term(engine) -> int:
     with Session(engine) as db:
         term = Term(code="SERVICE", required=True)
         db.add(term)
@@ -37,8 +34,13 @@ def test_signup_and_token_rotation(client):
         version = TermVersion(term_id=term.id, version="v1", content="service", effective_at=datetime.now(UTC))
         db.add(version)
         db.commit()
-        code = create_login_code(db, None, TokenSettings.from_env(), "GOOGLE", "google-user")
-        term_version_id = version.id
+        return version.id
+
+
+def test_signup_and_token_rotation(client):
+    test_client, engine = client
+    term_version_id = seed_required_term(engine)
+    code = create_login_code(TokenSettings.from_env(), "GOOGLE", "google-user")
 
     signup = test_client.post(
         "/auth/signup",
@@ -46,10 +48,10 @@ def test_signup_and_token_rotation(client):
     )
     assert signup.status_code == 200
     refresh_token = signup.json()["refresh_token"]
+    # 가입에 성공한 코드는 소진된다.
     assert test_client.post("/auth/signup", json={"code": code, "nickname": "other", "activity_region": "SEOUL", "agreed_term_version_ids": [term_version_id]}).status_code == 401
 
-    with Session(engine) as db:
-        duplicate_code = create_login_code(db, None, TokenSettings.from_env(), "GOOGLE", "google-user")
+    duplicate_code = create_login_code(TokenSettings.from_env(), "GOOGLE", "google-user")
     duplicate = test_client.post(
         "/auth/signup",
         json={"code": duplicate_code, "nickname": "other", "activity_region": "SEOUL", "agreed_term_version_ids": [term_version_id]},
@@ -62,20 +64,46 @@ def test_signup_and_token_rotation(client):
     assert test_client.post("/auth/logout", json={"refresh_token": refreshed.json()["refresh_token"]}).status_code == 204
 
 
-def test_signup_rejects_missing_required_terms_and_expired_code(client):
+def test_signup_rejects_expired_code(client, signup_codes):
     test_client, engine = client
-    with Session(engine) as db:
-        term = Term(code="SERVICE", required=True)
-        db.add(term); db.flush()
-        version = TermVersion(term_id=term.id, version="v1", content="service", effective_at=datetime.now(UTC))
-        db.add(version); db.commit()
-        code = create_login_code(db, None, TokenSettings.from_env(), "KAKAO", "kakao-user")
-        expired_code = create_login_code(db, None, TokenSettings.from_env(), "KAKAO", "expired")
-        expired = db.scalar(select(LoginCode).where(LoginCode.provider_user_id == "expired"))
-        assert expired is not None
-        expired.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-        db.commit()
+    term_version_id = seed_required_term(engine)
 
-    missing_terms = test_client.post("/auth/signup", json={"code": code, "nickname": "hannah", "activity_region": "SEOUL", "agreed_term_version_ids": []})
+    expired_code = create_login_code(TokenSettings.from_env(), "KAKAO", "expired")
+    # 만료는 Redis TTL이 처리하므로 "만료된 상태"는 곧 "키가 없는 상태"다.
+    signup_codes.store.clear()
+
+    expired = test_client.post(
+        "/auth/signup",
+        json={"code": expired_code, "nickname": "hannah", "activity_region": "SEOUL", "agreed_term_version_ids": [term_version_id]},
+    )
+    assert expired.status_code == 401
+
+
+def test_login_code_carries_the_configured_ttl(signup_codes, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AUTH_JWT_SECRET", "12345678901234567890123456789012")
+    monkeypatch.setenv("AUTH_ACCESS_TOKEN_TTL_SECONDS", "900")
+    monkeypatch.setenv("AUTH_LOGIN_CODE_TTL_SECONDS", "45")
+
+    create_login_code(TokenSettings.from_env(), "KAKAO", "kakao-user")
+
+    # 만료를 Redis에 맡긴 이상 TTL을 실제로 걸었는지가 유일하게 검증할 수 있는 지점이다.
+    assert list(signup_codes.ttls.values()) == [45]
+
+
+def test_rejected_signup_keeps_the_code_usable(client):
+    test_client, engine = client
+    term_version_id = seed_required_term(engine)
+    code = create_login_code(TokenSettings.from_env(), "KAKAO", "kakao-user")
+
+    missing_terms = test_client.post(
+        "/auth/signup",
+        json={"code": code, "nickname": "hannah", "activity_region": "SEOUL", "agreed_term_version_ids": []},
+    )
     assert missing_terms.status_code == 422
-    assert test_client.post("/auth/token", json={"code": expired_code}).status_code == 401
+
+    # 검증에서 막힌 요청은 코드를 소진하지 않는다. 약관만 채워 같은 코드로 다시 시도할 수 있다.
+    retried = test_client.post(
+        "/auth/signup",
+        json={"code": code, "nickname": "hannah", "activity_region": "SEOUL", "agreed_term_version_ids": [term_version_id]},
+    )
+    assert retried.status_code == 200

@@ -2,9 +2,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.auth.config import AppleNativeSettings, GoogleNativeSettings, KakaoNativeSettings, TokenSettings
-from app.auth.schemas import RefreshRequest, SignupRequest, SocialLoginRequest, SocialLoginResponse, TokenExchangeRequest, TokenResponse
+from app.auth.schemas import RefreshRequest, SignupRequest, SocialLoginRequest, SocialLoginResponse, TokenResponse
 from app.auth.service import (
-    exchange_login_code,
     apple_user_id,
     google_user_id,
     kakao_user_id,
@@ -37,13 +36,6 @@ def post_social_login(request: SocialLoginRequest, db: Session = Depends(get_db)
     assert tokens is not None
     access_token, refresh_token = tokens
     return SocialLoginResponse(signup_required=False, access_token=access_token, refresh_token=refresh_token, token_type="bearer")
-
-
-@router.post("/token", response_model=TokenResponse, summary="로그인 코드로 토큰 발급")
-def post_token(request: TokenExchangeRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    """일회용 로그인 코드를 access·refresh token으로 교환합니다."""
-    access_token, refresh_token = exchange_login_code(db, request.code, TokenSettings.from_env())
-    return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
 
 @router.post("/signup", response_model=TokenResponse, summary="소셜 계정 가입 완료")

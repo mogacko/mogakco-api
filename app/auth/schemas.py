@@ -1,10 +1,6 @@
 from pydantic import BaseModel, Field
 
 
-class TokenExchangeRequest(BaseModel):
-    code: str
-
-
 class RefreshRequest(BaseModel):
     refresh_token: str
 

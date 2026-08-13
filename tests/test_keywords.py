@@ -128,7 +128,7 @@ def test_signup_syncs_keywords(db, monkeypatch: pytest.MonkeyPatch):
     version = TermVersion(term_id=term.id, version="v1", content="약관", effective_at=datetime.now(UTC))
     db.add(version)
     db.commit()
-    code = create_login_code(db, None, settings, "GOOGLE", "google-user")
+    code = create_login_code(settings, "GOOGLE", "google-user")
 
     signup(
         db,

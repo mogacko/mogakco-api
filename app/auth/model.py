@@ -31,14 +31,6 @@ class AuthSession(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class LoginCode(Base):
-    __tablename__ = "login_codes"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    provider: Mapped[str | None] = mapped_column(String(10))
-    provider_user_id: Mapped[str | None] = mapped_column(String(255))
-    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+# 가입 대기 코드는 표가 아니라 Redis에 있다. TTL이 만료를 처리하고, 없어져도 앱이
+# 소셜 로그인을 다시 하면 새로 생긴다. app/auth/service.py의 create_login_code 참고.
 

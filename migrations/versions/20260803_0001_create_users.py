@@ -54,18 +54,6 @@ def upgrade() -> None:
     )
     op.create_index("ix_auth_sessions_user_id", "auth_sessions", ["user_id"])
     op.create_table(
-        "login_codes",
-        sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=True),
-        sa.Column("provider", sa.String(length=10), nullable=True),
-        sa.Column("provider_user_id", sa.String(length=255), nullable=True),
-        sa.Column("code_hash", sa.String(length=64), nullable=False, unique=True),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.create_index("ix_login_codes_user_id", "login_codes", ["user_id"])
-    op.create_index("ix_login_codes_expires_at", "login_codes", ["expires_at"])
-    op.create_table(
         "terms",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("code", sa.String(length=20), nullable=False, unique=True),
@@ -105,9 +93,6 @@ def downgrade() -> None:
     op.drop_index("ix_term_versions_term_id", table_name="term_versions")
     op.drop_table("term_versions")
     op.drop_table("terms")
-    op.drop_index("ix_login_codes_expires_at", table_name="login_codes")
-    op.drop_index("ix_login_codes_user_id", table_name="login_codes")
-    op.drop_table("login_codes")
     op.drop_index("ix_auth_sessions_user_id", table_name="auth_sessions")
     op.drop_table("auth_sessions")
     op.drop_index("ix_social_accounts_user_id", table_name="social_accounts")

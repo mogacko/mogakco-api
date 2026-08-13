@@ -1,15 +1,17 @@
 import hashlib
+import os
 import secrets
 import jwt
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
+import redis
 from fastapi import HTTPException, status
 from jwt.exceptions import InvalidTokenError, PyJWKClientConnectionError, PyJWKClientError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.config import AppleNativeSettings, GoogleNativeSettings, KakaoNativeSettings, TokenSettings
-from app.auth.model import AuthSession, LoginCode, SocialAccount
+from app.auth.model import AuthSession, SocialAccount
 from app.auth.token import create_access_token
 from app.keywords.service import sync_keywords
 from app.terms.service import current_term_versions
@@ -29,8 +31,20 @@ def _new_refresh_token() -> str:
     return secrets.token_urlsafe(48)
 
 
-def _as_utc(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+# 가입 코드는 Redis가 원본이다. 없어져도 앱이 소셜 로그인을 다시 하면 새로 생기므로
+# 재구축할 원천이 필요 없다. 대신 저장할 곳이 아예 없으면 가입을 시작할 수 없다.
+_CODE_KEY = "signup:v1:{digest}"
+_REDIS: redis.Redis | None = None
+
+
+def _redis() -> redis.Redis:
+    global _REDIS
+    if _REDIS is None:
+        url = os.getenv("REDIS_URL")
+        if not url:
+            raise RuntimeError("REDIS_URL이 없어 가입 코드를 저장할 수 없다.")
+        _REDIS = redis.Redis.from_url(url, decode_responses=True)
+    return _REDIS
 
 
 def find_social_user_id(db: Session, provider: str, external_user_id: str) -> int | None:
@@ -100,25 +114,24 @@ def kakao_user_id(id_token: str, nonce: str, settings: KakaoNativeSettings) -> s
     return subject
 
 
-def create_login_code(db: Session, user_id: int | None, settings: TokenSettings, provider: str | None = None, provider_user_id: str | None = None) -> str:
+def create_login_code(settings: TokenSettings, provider: str, provider_user_id: str) -> str:
+    """가입 대기 코드. ID token 검증 결과를 앱이 가입 화면을 띄우는 동안 붙들어 둔다.
+
+    만료는 TTL이 처리한다. provider에는 콜론이 없으므로 값은 콜론 하나로 나눈다.
+    """
     code = secrets.token_urlsafe(32)
-    db.add(
-        LoginCode(
-            user_id=user_id,
-            provider=provider,
-            provider_user_id=provider_user_id,
-            code_hash=_hash(code),
-            expires_at=datetime.now(UTC) + timedelta(seconds=settings.login_code_ttl_seconds),
-        )
+    _redis().setex(
+        _CODE_KEY.format(digest=_hash(code)),
+        settings.login_code_ttl_seconds,
+        f"{provider}:{provider_user_id}",
     )
-    db.commit()
     return code
 
 
 def social_login(db: Session, provider: str, provider_user_id: str, settings: TokenSettings) -> tuple[tuple[str, str] | None, str | None]:
     user_id = find_social_user_id(db, provider, provider_user_id)
     if user_id is None:
-        return None, create_login_code(db, None, settings, provider, provider_user_id)
+        return None, create_login_code(settings, provider, provider_user_id)
     tokens = _issue_tokens(db, user_id, settings)
     db.commit()
     return tokens, None
@@ -128,19 +141,6 @@ def _issue_tokens(db: Session, user_id: int, settings: TokenSettings) -> tuple[s
     refresh_token = _new_refresh_token()
     db.add(AuthSession(user_id=user_id, refresh_token_hash=_hash(refresh_token), last_used_at=datetime.now(UTC)))
     return create_access_token(user_id, settings), refresh_token
-
-
-def exchange_login_code(db: Session, code: str, settings: TokenSettings) -> tuple[str, str]:
-    login_code = db.scalar(select(LoginCode).where(LoginCode.code_hash == _hash(code)).with_for_update())
-    now = datetime.now(UTC)
-    if login_code is None or login_code.used_at is not None or _as_utc(login_code.expires_at) <= now:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 로그인 코드입니다.")
-    if login_code.user_id is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="가입 완료가 필요합니다.")
-    login_code.used_at = now
-    tokens = _issue_tokens(db, login_code.user_id, settings)
-    db.commit()
-    return tokens
 
 
 def refresh_tokens(db: Session, refresh_token: str, settings: TokenSettings) -> tuple[str, str]:
@@ -161,12 +161,12 @@ def logout(db: Session, refresh_token: str) -> None:
 
 
 def signup(db: Session, code: str, values: dict, term_version_ids: list[int], settings: TokenSettings) -> tuple[str, str]:
-    login_code = db.scalar(select(LoginCode).where(LoginCode.code_hash == _hash(code)).with_for_update())
-    now = datetime.now(UTC)
-    if login_code is None or login_code.used_at is not None or _as_utc(login_code.expires_at) <= now or login_code.user_id is not None:
+    # 만료·미발급·이미 쓴 코드가 모두 "키가 없다" 하나로 걸린다.
+    key = _CODE_KEY.format(digest=_hash(code))
+    stored = _redis().get(key)
+    if stored is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 가입 코드입니다.")
-    if login_code.provider is None or login_code.provider_user_id is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="소셜 계정 정보가 없습니다.")
+    provider, provider_user_id = stored.split(":", 1)
     required_ids = {version.id for term, version in current_term_versions(db) if term.required}
     if not required_ids.issubset(term_version_ids):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="필수 약관 동의가 필요합니다.")
@@ -176,19 +176,22 @@ def signup(db: Session, code: str, values: dict, term_version_ids: list[int], se
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="이미 사용 중인 닉네임입니다.")
     if db.scalar(
         select(SocialAccount.id).where(
-            SocialAccount.provider == login_code.provider,
-            SocialAccount.provider_user_id == login_code.provider_user_id,
+            SocialAccount.provider == provider,
+            SocialAccount.provider_user_id == provider_user_id,
         )
     ) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="이미 연결된 소셜 계정입니다.")
     user = User(**values)
     db.add(user); db.flush()
     sync_keywords(db, user.id, values)
-    db.add(SocialAccount(user_id=user.id, provider=login_code.provider, provider_user_id=login_code.provider_user_id))
+    db.add(SocialAccount(user_id=user.id, provider=provider, provider_user_id=provider_user_id))
     from app.terms.model import UserTermAgreement
     for version_id in set(term_version_ids):
         db.add(UserTermAgreement(user_id=user.id, term_version_id=version_id))
-    login_code.used_at = now
     tokens = _issue_tokens(db, user.id, settings)
     db.commit()
+    # 커밋한 뒤에 지운다. 먼저 지우면 커밋이 실패했을 때 코드만 날아간다. 위 검증에서 막힌
+    # 요청은 코드를 소진하지 않으므로 닉네임만 고쳐 다시 시도할 수 있다. 삭제가 실패해도
+    # 남은 코드로 다시 가입하면 social_accounts 유니크 제약이 막는다.
+    _redis().delete(key)
     return tokens
