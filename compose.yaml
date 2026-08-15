@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mogakco}
+      POSTGRES_USER: ${POSTGRES_USER:-mogakco}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mogakco}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  migrate:
+    build: .
+    volumes:
+      - .:/app
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mogakco}:${POSTGRES_PASSWORD:-mogakco}@db:5432/${POSTGRES_DB:-mogakco}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  postgres_data:
