@@ -1,5 +1,9 @@
-from sqlalchemy import MetaData
-from sqlalchemy.orm import DeclarativeBase
+import os
+from collections.abc import Generator
+from functools import lru_cache
+
+from sqlalchemy import Engine, MetaData, create_engine
+from sqlalchemy.orm import DeclarativeBase, Session
 
 
 class Base(DeclarativeBase):
@@ -11,3 +15,13 @@ class Base(DeclarativeBase):
             "pk": "pk_%(table_name)s",
         }
     )
+
+
+@lru_cache
+def get_engine() -> Engine:
+    return create_engine(os.environ["DATABASE_URL"], pool_pre_ping=True)
+
+
+def get_db() -> Generator[Session]:
+    with Session(get_engine()) as session:
+        yield session
