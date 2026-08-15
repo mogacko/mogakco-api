@@ -76,6 +76,10 @@ class PostPageResponse(BaseModel):
     categoryCounts: dict[PostCategory, int] | None = None
 
 
+class PopularPostsResponse(BaseModel):
+    items: list[PostResponse]
+
+
 class LikeResponse(BaseModel):
     likeCount: int = Field(ge=0)
     isLiked: bool
