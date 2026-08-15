@@ -41,10 +41,10 @@ class Post(Base):
     __tablename__ = "posts"
     __table_args__ = (
         CheckConstraint("char_length(body) <= 10000", name="ck_posts_body_length"),
-        Index("ix_posts_chapter_board_created", "chapter_id", "board", "created_at"),
+        Index("ix_posts_region_board_created", "region_id", "board", "created_at"),
         Index(
-            "ix_posts_chapter_board_category_created",
-            "chapter_id",
+            "ix_posts_region_board_category_created",
+            "region_id",
             "board",
             "category",
             "created_at",
@@ -56,7 +56,7 @@ class Post(Base):
     author_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
-    chapter_id: Mapped[int] = mapped_column(ForeignKey("chapters.id"))
+    region_id: Mapped[int] = mapped_column(ForeignKey("region.id"))
     board: Mapped[PostBoard] = mapped_column(
         Enum(
             PostBoard,

@@ -6,15 +6,15 @@ from app.models.community import (
     PostCategory,
     PostLike,
 )
-from app.models.core import Chapter, User
+from app.models.core import Region, User
 
 __all__ = [
-    "Chapter",
     "Comment",
     "CommentTargetType",
     "Post",
     "PostBoard",
     "PostCategory",
     "PostLike",
+    "Region",
     "User",
 ]

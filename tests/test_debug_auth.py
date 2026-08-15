@@ -24,9 +24,9 @@ def auth_app() -> Generator[tuple[TestClient, sa.Engine, int, int]]:
 
     with Session(engine) as session:
         session.execute(sa.delete(User))
-        active = User(nickname="active-user", chapter_id=1)
+        active = User(nickname="active-user", region_id=1)
         deleted = User(
-            nickname="deleted-user", chapter_id=1, deleted_at=datetime.now(UTC)
+            nickname="deleted-user", region_id=1, deleted_at=datetime.now(UTC)
         )
         session.add_all([active, deleted])
         session.commit()
@@ -45,7 +45,7 @@ def auth_app() -> Generator[tuple[TestClient, sa.Engine, int, int]]:
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> dict[str, int]:
-        created = User(nickname=f"created-by-{current_user.id}", chapter_id=1)
+        created = User(nickname=f"created-by-{current_user.id}", region_id=1)
         db.add(created)
         db.commit()
         return {"currentUserId": current_user.id}

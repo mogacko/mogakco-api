@@ -31,13 +31,13 @@ def test_community_migration_constraints_and_delete_rules() -> None:
     with engine.begin() as connection:
         user_id = connection.scalar(
             sa.text(
-                "INSERT INTO users (nickname, chapter_id) VALUES ('community-user', 1) "
+                "INSERT INTO users (nickname, region_id) VALUES ('community-user', 1) "
                 "RETURNING id"
             )
         )
         post_id = connection.scalar(
             sa.text(
-                "INSERT INTO posts (author_id, chapter_id, board, category, title, body) "
+                "INSERT INTO posts (author_id, region_id, board, category, title, body) "
                 "VALUES (:user_id, 1, 'talk', 'free', 'title', 'body') RETURNING id"
             ),
             {"user_id": user_id},
@@ -72,7 +72,7 @@ def test_community_migration_constraints_and_delete_rules() -> None:
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
             sa.text(
-                "INSERT INTO posts (chapter_id, board, title, body) "
+                "INSERT INTO posts (region_id, board, title, body) "
                 "VALUES (1, 'question', 'title', :body)"
             ),
             {"body": "x" * 10001},
@@ -122,11 +122,15 @@ def test_community_migration_constraints_and_delete_rules() -> None:
     assert "deleted_at" not in {
         column["name"] for column in sa.inspect(engine).get_columns("post_likes")
     }
+    post_indexes = {index["name"] for index in sa.inspect(engine).get_indexes("posts")}
+    assert "ix_posts_region_board_created" in post_indexes
+    assert "ix_posts_region_board_category_created" in post_indexes
+    assert not any("chapter" in name for name in post_indexes)
 
     with engine.begin() as connection:
         second_user_id = connection.scalar(
             sa.text(
-                "INSERT INTO users (nickname, chapter_id) VALUES ('second-user', 1) "
+                "INSERT INTO users (nickname, region_id) VALUES ('second-user', 1) "
                 "RETURNING id"
             )
         )
