@@ -160,6 +160,27 @@ def _comment_response(
     )
 
 
+def created_comment_response(
+    comment: Comment, author: User
+) -> "CommentResponse":
+    return _comment_response(
+        {
+            "id": comment.id,
+            "target_type": comment.target_type,
+            "target_id": comment.target_id,
+            "parent_comment_id": comment.parent_comment_id,
+            "user_id": author.id,
+            "author_nickname": author.nickname,
+            "author_deleted_at": author.deleted_at,
+            "content": comment.content,
+            "created_at": comment.created_at,
+            "updated_at": comment.updated_at,
+            "deleted_at": comment.deleted_at,
+        },
+        author.id,
+    )
+
+
 def comment_threads_from_rows(
     rows: list[Mapping[str, Any]], current_user_id: int
 ) -> "CommentThreadResponse":

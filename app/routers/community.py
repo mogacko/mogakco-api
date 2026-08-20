@@ -9,9 +9,19 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models import CommentTargetType, Post, PostBoard, PostCategory, Region, User
+from app.models import (
+    Comment,
+    CommentTargetType,
+    Post,
+    PostBoard,
+    PostCategory,
+    Region,
+    User,
+)
 from app.redis_client import get_redis_client
 from app.schemas import (
+    CommentCreateRequest,
+    CommentResponse,
     CommentThreadResponse,
     LikeResponse,
     PopularPostsResponse,
@@ -23,6 +33,7 @@ from app.schemas import (
 from app.services.community import (
     comment_target_exists,
     comment_threads_from_rows,
+    created_comment_response,
     get_region_by_chapter_code,
     get_post_like_stats,
     post_response_from_row,
@@ -113,6 +124,49 @@ def list_comments(
         select_comments_for_target(targetType, targetId)
     ).mappings().all()
     return comment_threads_from_rows(rows, current_user.id)
+
+
+@router.post(
+    "/comments",
+    response_model=CommentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_comment(
+    request: CommentCreateRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> CommentResponse:
+    if not comment_target_exists(db, request.targetType, request.targetId):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Target not found")
+
+    if request.parentId is not None:
+        parent = db.get(Comment, request.parentId)
+        if parent is None or parent.deleted_at is not None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, "Parent comment not found"
+            )
+        if (
+            parent.parent_comment_id is not None
+            or parent.target_type is not request.targetType
+            or parent.target_id != request.targetId
+        ):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "Invalid comment parent",
+            )
+
+    comment = Comment(
+        target_type=request.targetType,
+        target_id=request.targetId,
+        parent_comment_id=request.parentId,
+        user_id=current_user.id,
+        content=request.body,
+    )
+    db.add(comment)
+    db.flush()
+    response = created_comment_response(comment, current_user)
+    db.commit()
+    return response
 
 
 @router.get("/chapters/{chapterCode}/posts", response_model=PostPageResponse)

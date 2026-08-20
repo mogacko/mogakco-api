@@ -1076,3 +1076,228 @@ def test_list_comments_validates_target_query_auth_and_post_comment_count(
     )
     assert detail.status_code == 200
     assert detail.json()["commentCount"] == 2
+
+
+def test_create_root_and_reply_returns_dto_and_updates_reads(
+    api: tuple[TestClient, sa.Engine, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        post = add_post(db, viewer_id, title="comment target")
+        db.commit()
+        post_id = post.id
+
+    redis = get_redis_client()
+    original_pipeline = redis.pipeline
+    before = client.get(f"/api/v1/posts/{post_id}", headers=auth(viewer_id))
+    assert before.status_code == 200
+    assert before.json()["commentCount"] == 0
+
+    def failed_pipeline(*, transaction: bool = True):
+        raise RedisConnectionError("unavailable")
+
+    monkeypatch.setattr(redis, "pipeline", failed_pipeline)
+    root_response = client.post(
+        "/api/v1/comments",
+        json={"targetType": "post", "targetId": post_id, "body": "  x  "},
+        headers=auth(viewer_id),
+    )
+    assert root_response.status_code == 201
+    root = root_response.json()
+    assert root == {
+        "id": root["id"],
+        "targetType": "post",
+        "targetId": post_id,
+        "parentId": None,
+        "authorId": viewer_id,
+        "authorNickname": "viewer",
+        "authorAvatarUrl": None,
+        "body": "x",
+        "createdAt": root["createdAt"],
+        "editedAt": None,
+        "isDeleted": False,
+        "isMine": True,
+    }
+
+    monkeypatch.setattr(redis, "pipeline", original_pipeline)
+    after_root = client.get(
+        f"/api/v1/posts/{post_id}", headers=auth(viewer_id)
+    )
+    assert after_root.status_code == 200
+    assert after_root.json()["commentCount"] == 1
+    monkeypatch.setattr(redis, "pipeline", failed_pipeline)
+
+    reply_body = "r" * 300
+    reply_response = client.post(
+        "/api/v1/comments",
+        json={
+            "targetType": "post",
+            "targetId": post_id,
+            "parentId": root["id"],
+            "body": reply_body,
+        },
+        headers=auth(viewer_id),
+    )
+    assert reply_response.status_code == 201
+    reply = reply_response.json()
+    assert reply["parentId"] == root["id"]
+    assert reply["body"] == reply_body
+    assert reply["authorId"] == viewer_id
+    assert reply["editedAt"] is None
+    assert reply["isDeleted"] is False
+    assert reply["isMine"] is True
+
+    with Session(engine) as db:
+        rows = db.scalars(
+            sa.select(Comment)
+            .where(Comment.target_id == post_id)
+            .order_by(Comment.id)
+        ).all()
+        assert len(rows) == 2
+        assert rows[0].user_id == viewer_id
+        assert rows[0].content == "x"
+        assert rows[0].parent_comment_id is None
+        assert rows[0].uuid is not None
+        assert rows[0].updated_at is None
+        assert rows[0].deleted_at is None
+        assert rows[1].parent_comment_id == rows[0].id
+
+    listed = client.get(
+        f"/api/v1/comments?targetType=post&targetId={post_id}",
+        headers=auth(viewer_id),
+    )
+    assert listed.status_code == 200
+    assert listed.json()["count"] == 2
+    assert listed.json()["items"][0]["comment"]["id"] == root["id"]
+    assert listed.json()["items"][0]["replies"][0]["id"] == reply["id"]
+
+    monkeypatch.setattr(redis, "pipeline", original_pipeline)
+    detail = client.get(f"/api/v1/posts/{post_id}", headers=auth(viewer_id))
+    assert detail.status_code == 200
+    assert detail.json()["commentCount"] == 2
+
+
+def test_create_reply_rejects_missing_deleted_mismatched_and_reply_parent(
+    api: tuple[TestClient, sa.Engine, int]
+) -> None:
+    client, engine, viewer_id = api
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        first_post = add_post(db, viewer_id, title="first")
+        second_post = add_post(db, viewer_id, title="second")
+        db.flush()
+        root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=first_post.id,
+            user_id=viewer_id,
+            content="root",
+        )
+        deleted_root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=first_post.id,
+            user_id=viewer_id,
+            content="deleted",
+            deleted_at=now,
+        )
+        other_post_root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=second_post.id,
+            user_id=viewer_id,
+            content="other post",
+        )
+        other_type_root = Comment(
+            target_type=CommentTargetType.EVENT,
+            target_id=first_post.id,
+            user_id=viewer_id,
+            content="other type",
+        )
+        db.add_all([root, deleted_root, other_post_root, other_type_root])
+        db.flush()
+        reply = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=first_post.id,
+            parent_comment_id=root.id,
+            user_id=viewer_id,
+            content="reply",
+        )
+        db.add(reply)
+        db.commit()
+        ids = {
+            "post": first_post.id,
+            "deleted": deleted_root.id,
+            "other_post": other_post_root.id,
+            "other_type": other_type_root.id,
+            "reply": reply.id,
+        }
+
+    before = 5
+    cases = (
+        (999999, 404),
+        (ids["deleted"], 404),
+        (ids["other_post"], 422),
+        (ids["other_type"], 422),
+        (ids["reply"], 422),
+    )
+    for parent_id, expected_status in cases:
+        response = client.post(
+            "/api/v1/comments",
+            json={
+                "targetType": "post",
+                "targetId": ids["post"],
+                "parentId": parent_id,
+                "body": "must fail",
+            },
+            headers=auth(viewer_id),
+        )
+        assert response.status_code == expected_status
+        with Session(engine) as db:
+            assert db.scalar(
+                sa.select(sa.func.count()).select_from(Comment)
+            ) == before
+
+
+def test_create_comment_validates_target_body_auth_and_spoofed_author(
+    api: tuple[TestClient, sa.Engine, int]
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        active = add_post(db, viewer_id, title="active")
+        deleted = add_post(
+            db, viewer_id, title="deleted", deleted_at=datetime.now(UTC)
+        )
+        db.commit()
+        active_id, deleted_id = active.id, deleted.id
+
+    valid = {"targetType": "post", "targetId": active_id, "body": "body"}
+    assert client.post("/api/v1/comments", json=valid).status_code == 401
+    assert client.post(
+        "/api/v1/comments",
+        json=valid,
+        headers={"X-Debug-User-Id": "invalid"},
+    ).status_code == 401
+
+    for payload, expected_status in (
+        ({**valid, "targetId": 999999}, 404),
+        ({**valid, "targetId": deleted_id}, 404),
+        ({**valid, "targetType": "event"}, 404),
+        ({**valid, "targetType": "meetup"}, 404),
+        ({**valid, "body": "   "}, 422),
+        ({**valid, "body": "x" * 301}, 422),
+        ({**valid, "userId": viewer_id}, 422),
+        ({**valid, "authorId": viewer_id}, 422),
+    ):
+        assert client.post(
+            "/api/v1/comments",
+            json=payload,
+            headers=auth(viewer_id),
+        ).status_code == expected_status
+
+    schema = app.openapi()["components"]["schemas"]["CommentCreateRequest"]
+    assert set(schema["properties"]) == {
+        "targetType",
+        "targetId",
+        "parentId",
+        "body",
+    }
+    with Session(engine) as db:
+        assert db.scalar(sa.select(sa.func.count()).select_from(Comment)) == 0
