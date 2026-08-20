@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models import Post, PostBoard, PostCategory, Region, User
+from app.models import CommentTargetType, Post, PostBoard, PostCategory, Region, User
 from app.redis_client import get_redis_client
 from app.schemas import (
+    CommentThreadResponse,
     LikeResponse,
     PopularPostsResponse,
     PostCreateRequest,
@@ -20,9 +21,12 @@ from app.schemas import (
     PostUpdateRequest,
 )
 from app.services.community import (
+    comment_target_exists,
+    comment_threads_from_rows,
     get_region_by_chapter_code,
     get_post_like_stats,
     post_response_from_row,
+    select_comments_for_target,
     select_posts_with_stats,
     set_post_liked,
     validate_post_category,
@@ -94,6 +98,21 @@ def _page_response(
         boardTotal=board_total,
         categoryCounts=category_counts,
     )
+
+
+@router.get("/comments", response_model=CommentThreadResponse)
+def list_comments(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    targetType: Annotated[CommentTargetType, Query()],
+    targetId: Annotated[int, Query(gt=0)],
+) -> CommentThreadResponse:
+    if not comment_target_exists(db, targetType, targetId):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Target not found")
+    rows = db.execute(
+        select_comments_for_target(targetType, targetId)
+    ).mappings().all()
+    return comment_threads_from_rows(rows, current_user.id)
 
 
 @router.get("/chapters/{chapterCode}/posts", response_model=PostPageResponse)

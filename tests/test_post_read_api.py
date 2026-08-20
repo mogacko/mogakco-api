@@ -776,3 +776,303 @@ def test_redis_failure_rolls_back_post_writes_but_not_soft_delete(
     assert delete_response.status_code == 204
     with Session(engine) as db:
         assert db.get(Post, post_id).deleted_at is not None
+
+
+def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
+    api: tuple[TestClient, sa.Engine, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, engine, viewer_id = api
+    base = datetime(2026, 8, 15, tzinfo=UTC)
+    with Session(engine) as db:
+        other = User(nickname="other", region_id=1)
+        withdrawn = User(
+            nickname="withdrawn", region_id=1, deleted_at=base
+        )
+        removed = User(nickname="removed", region_id=1)
+        db.add_all([other, withdrawn, removed])
+        db.flush()
+        post = add_post(db, viewer_id, title="comments")
+        other_post = add_post(db, viewer_id, title="other post")
+        db.flush()
+
+        root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=other.id,
+            content="root",
+            created_at=base,
+            updated_at=base + timedelta(minutes=1),
+        )
+        db.add(root)
+        db.flush()
+        other_reply = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            parent_comment_id=root.id,
+            user_id=other.id,
+            content="other reply",
+            created_at=base + timedelta(minutes=2),
+        )
+        db.add(other_reply)
+        db.flush()
+        mine_reply = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            parent_comment_id=root.id,
+            user_id=viewer_id,
+            content="mine reply",
+            created_at=base + timedelta(minutes=2),
+        )
+        deleted_reply = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            parent_comment_id=root.id,
+            user_id=viewer_id,
+            content="deleted reply secret",
+            created_at=base + timedelta(minutes=3),
+            deleted_at=base + timedelta(minutes=4),
+        )
+        db.add_all([mine_reply, deleted_reply])
+        db.flush()
+        depth_two = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            parent_comment_id=other_reply.id,
+            user_id=viewer_id,
+            content="invalid depth two",
+            created_at=base + timedelta(minutes=4),
+        )
+        deleted_root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=other.id,
+            content="deleted root secret",
+            created_at=base + timedelta(minutes=5),
+            deleted_at=base + timedelta(minutes=6),
+        )
+        db.add_all([depth_two, deleted_root])
+        db.flush()
+        deleted_root_reply = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            parent_comment_id=deleted_root.id,
+            user_id=viewer_id,
+            content="visible reply",
+            created_at=base + timedelta(minutes=7),
+        )
+        empty_deleted_root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=other.id,
+            content="hidden thread",
+            created_at=base + timedelta(minutes=8),
+            deleted_at=base + timedelta(minutes=9),
+        )
+        withdrawn_root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=withdrawn.id,
+            content="withdrawn author",
+            created_at=base + timedelta(minutes=10),
+        )
+        removed_root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=removed.id,
+            content="removed author",
+            created_at=base + timedelta(minutes=11),
+        )
+        unrelated = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=other_post.id,
+            user_id=viewer_id,
+            content="unrelated",
+            created_at=base,
+        )
+        db.add_all(
+            [
+                deleted_root_reply,
+                empty_deleted_root,
+                withdrawn_root,
+                removed_root,
+                unrelated,
+            ]
+        )
+        db.flush()
+        ids = {
+            "post": post.id,
+            "other": other.id,
+            "root": root.id,
+            "other_reply": other_reply.id,
+            "mine_reply": mine_reply.id,
+            "deleted_reply": deleted_reply.id,
+            "depth_two": depth_two.id,
+            "deleted_root": deleted_root.id,
+            "empty_deleted_root": empty_deleted_root.id,
+            "withdrawn_root": withdrawn_root.id,
+            "removed_root": removed_root.id,
+        }
+        db.delete(removed)
+        db.commit()
+
+    redis = get_redis_client()
+    original_pipeline = redis.pipeline
+
+    def failed_pipeline(*, transaction: bool = True):
+        raise RedisConnectionError("unavailable")
+
+    monkeypatch.setattr(redis, "pipeline", failed_pipeline)
+    select_count = 0
+
+    def count_selects(
+        conn, cursor, statement, parameters, context, executemany
+    ) -> None:
+        nonlocal select_count
+        if statement.lstrip().upper().startswith("SELECT"):
+            select_count += 1
+
+    sa.event.listen(engine, "before_cursor_execute", count_selects)
+    try:
+        response = client.get(
+            f"/api/v1/comments?targetType=post&targetId={ids['post']}",
+            headers=auth(viewer_id),
+        )
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", count_selects)
+
+    assert response.status_code == 200
+    assert select_count == 3  # Debug Auth, target validation, comments + authors.
+    payload = response.json()
+    assert payload["count"] == 6
+    assert [item["comment"]["id"] for item in payload["items"]] == [
+        ids["root"],
+        ids["deleted_root"],
+        ids["withdrawn_root"],
+        ids["removed_root"],
+    ]
+
+    first = payload["items"][0]
+    assert first["masked"] is False
+    assert first["comment"] == {
+        "id": ids["root"],
+        "targetType": "post",
+        "targetId": ids["post"],
+        "parentId": None,
+        "authorId": ids["other"],
+        "authorNickname": "other",
+        "authorAvatarUrl": None,
+        "body": "root",
+        "createdAt": base.isoformat().replace("+00:00", "Z"),
+        "editedAt": (base + timedelta(minutes=1)).isoformat().replace(
+            "+00:00", "Z"
+        ),
+        "isDeleted": False,
+        "isMine": False,
+    }
+    assert [reply["id"] for reply in first["replies"]] == [
+        ids["other_reply"],
+        ids["mine_reply"],
+    ]
+    assert [reply["isMine"] for reply in first["replies"]] == [False, True]
+
+    tombstone = payload["items"][1]
+    assert tombstone["masked"] is True
+    assert tombstone["comment"]["isDeleted"] is True
+    assert tombstone["comment"]["body"] == ""
+    assert [reply["body"] for reply in tombstone["replies"]] == [
+        "visible reply"
+    ]
+
+    for item in payload["items"][2:]:
+        assert item["comment"]["authorId"] is None
+        assert item["comment"]["authorNickname"] == "탈퇴한 사용자"
+        assert item["comment"]["authorAvatarUrl"] is None
+        assert item["comment"]["isMine"] is False
+
+    response_text = response.text
+    assert "deleted root secret" not in response_text
+    assert "deleted reply secret" not in response_text
+    assert "invalid depth two" not in response_text
+    assert str(ids["empty_deleted_root"]) not in {
+        str(item["comment"]["id"]) for item in payload["items"]
+    }
+
+    monkeypatch.setattr(redis, "pipeline", original_pipeline)
+    detail = client.get(
+        f"/api/v1/posts/{ids['post']}", headers=auth(viewer_id)
+    )
+    assert detail.status_code == 200
+    assert detail.json()["commentCount"] == 6
+
+
+def test_list_comments_validates_target_query_auth_and_post_comment_count(
+    api: tuple[TestClient, sa.Engine, int]
+) -> None:
+    client, engine, viewer_id = api
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        active = add_post(db, viewer_id, title="active")
+        deleted = add_post(
+            db, viewer_id, title="deleted", deleted_at=now
+        )
+        db.flush()
+        root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=active.id,
+            user_id=viewer_id,
+            content="root",
+        )
+        db.add(root)
+        db.flush()
+        reply = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=active.id,
+            parent_comment_id=root.id,
+            user_id=viewer_id,
+            content="reply",
+        )
+        deleted_reply = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=active.id,
+            parent_comment_id=root.id,
+            user_id=viewer_id,
+            content="deleted",
+            deleted_at=now,
+        )
+        db.add_all([reply, deleted_reply])
+        db.commit()
+        active_id, deleted_id = active.id, deleted.id
+
+    endpoint = f"/api/v1/comments?targetType=post&targetId={active_id}"
+    response = client.get(endpoint, headers=auth(viewer_id))
+    assert response.status_code == 200
+    assert response.json()["count"] == 2
+    assert client.get(endpoint).status_code == 401
+    assert client.get(
+        "/api/v1/comments?targetType=post&targetId=999999",
+        headers=auth(viewer_id),
+    ).status_code == 404
+    assert client.get(
+        f"/api/v1/comments?targetType=post&targetId={deleted_id}",
+        headers=auth(viewer_id),
+    ).status_code == 404
+    for target_type in ("event", "meetup"):
+        assert client.get(
+            f"/api/v1/comments?targetType={target_type}&targetId=1",
+            headers=auth(viewer_id),
+        ).status_code == 404
+    for invalid_query in (
+        f"targetId={active_id}",
+        "targetType=post",
+        f"targetType=invalid&targetId={active_id}",
+        "targetType=post&targetId=0",
+    ):
+        assert client.get(
+            f"/api/v1/comments?{invalid_query}", headers=auth(viewer_id)
+        ).status_code == 422
+
+    detail = client.get(
+        f"/api/v1/posts/{active_id}", headers=auth(viewer_id)
+    )
+    assert detail.status_code == 200
+    assert detail.json()["commentCount"] == 2

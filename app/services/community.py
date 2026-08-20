@@ -3,8 +3,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from redis import Redis
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import Select
 
 from app.models import (
@@ -18,7 +18,7 @@ from app.models import (
 )
 
 if TYPE_CHECKING:
-    from app.schemas import PostResponse
+    from app.schemas import CommentResponse, CommentThreadResponse, PostResponse
 
 
 def validate_post_category(
@@ -53,14 +53,27 @@ def serialize_author(
 
 
 def select_posts_with_stats() -> Select:
+    parent_comment = aliased(Comment)
     comment_counts = (
         select(
             Comment.target_id.label("post_id"),
             func.count(Comment.id).label("comment_count"),
         )
+        .outerjoin(
+            parent_comment,
+            parent_comment.id == Comment.parent_comment_id,
+        )
         .where(
             Comment.target_type == CommentTargetType.POST,
             Comment.deleted_at.is_(None),
+            or_(
+                Comment.parent_comment_id.is_(None),
+                and_(
+                    parent_comment.parent_comment_id.is_(None),
+                    parent_comment.target_type == Comment.target_type,
+                    parent_comment.target_id == Comment.target_id,
+                ),
+            ),
         )
         .group_by(Comment.target_id)
         .subquery()
@@ -85,6 +98,102 @@ def select_posts_with_stats() -> Select:
         .outerjoin(comment_counts, comment_counts.c.post_id == Post.id)
         .where(Post.deleted_at.is_(None))
     )
+
+
+def comment_target_exists(
+    db: Session, target_type: CommentTargetType, target_id: int
+) -> bool:
+    if target_type is not CommentTargetType.POST:
+        return False
+    return db.scalar(
+        select(Post.id).where(Post.id == target_id, Post.deleted_at.is_(None))
+    ) is not None
+
+
+def select_comments_for_target(
+    target_type: CommentTargetType, target_id: int
+) -> Select:
+    return (
+        select(
+            Comment.id,
+            Comment.target_type,
+            Comment.target_id,
+            Comment.parent_comment_id,
+            Comment.user_id,
+            User.nickname.label("author_nickname"),
+            User.deleted_at.label("author_deleted_at"),
+            Comment.content,
+            Comment.created_at,
+            Comment.updated_at,
+            Comment.deleted_at,
+        )
+        .outerjoin(User, User.id == Comment.user_id)
+        .where(
+            Comment.target_type == target_type,
+            Comment.target_id == target_id,
+        )
+        .order_by(Comment.created_at, Comment.id)
+    )
+
+
+def _comment_response(
+    row: Mapping[str, Any], current_user_id: int, *, tombstone: bool = False
+) -> "CommentResponse":
+    from app.schemas import CommentResponse
+
+    author_active = (
+        row["user_id"] is not None and row["author_deleted_at"] is None
+    )
+    return CommentResponse(
+        id=row["id"],
+        targetType=row["target_type"],
+        targetId=row["target_id"],
+        parentId=row["parent_comment_id"],
+        body="" if tombstone else row["content"],
+        createdAt=row["created_at"],
+        editedAt=row["updated_at"],
+        isDeleted=row["deleted_at"] is not None,
+        isMine=author_active and row["user_id"] == current_user_id,
+        **serialize_author(
+            row["user_id"], row["author_nickname"], row["author_deleted_at"]
+        ),
+    )
+
+
+def comment_threads_from_rows(
+    rows: list[Mapping[str, Any]], current_user_id: int
+) -> "CommentThreadResponse":
+    from app.schemas import CommentThread, CommentThreadResponse
+
+    roots = [row for row in rows if row["parent_comment_id"] is None]
+    root_ids = {row["id"] for row in roots}
+    replies: dict[int, list[Mapping[str, Any]]] = {root_id: [] for root_id in root_ids}
+    for row in rows:
+        parent_id = row["parent_comment_id"]
+        if parent_id in root_ids and row["deleted_at"] is None:
+            replies[parent_id].append(row)
+
+    items = []
+    count = 0
+    for root in roots:
+        visible_replies = replies[root["id"]]
+        root_deleted = root["deleted_at"] is not None
+        if root_deleted and not visible_replies:
+            continue
+        count += (not root_deleted) + len(visible_replies)
+        items.append(
+            CommentThread(
+                comment=_comment_response(
+                    root, current_user_id, tombstone=root_deleted
+                ),
+                masked=root_deleted,
+                replies=[
+                    _comment_response(reply, current_user_id)
+                    for reply in visible_replies
+                ],
+            )
+        )
+    return CommentThreadResponse(count=count, items=items)
 
 
 def post_like_key(post_id: int) -> str:
