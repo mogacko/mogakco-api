@@ -7,11 +7,14 @@ import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.main import app
 from app.models import Comment, CommentTargetType, Post, PostBoard, PostCategory, PostLike, User
+from app.redis_client import get_redis_client
+from app.services.community import post_like_key
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -20,6 +23,8 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 def api(monkeypatch: pytest.MonkeyPatch) -> Generator[tuple[TestClient, sa.Engine, int]]:
     command.upgrade(Config("alembic.ini"), "head")
     engine = sa.create_engine(DATABASE_URL)
+    redis = get_redis_client()
+    redis.flushdb()
     with Session(engine) as db:
         db.execute(sa.delete(Comment))
         db.execute(sa.delete(PostLike))
@@ -40,6 +45,9 @@ def api(monkeypatch: pytest.MonkeyPatch) -> Generator[tuple[TestClient, sa.Engin
     with TestClient(app) as client:
         yield client, engine, viewer_id
     app.dependency_overrides.clear()
+    redis.flushdb()
+    redis.close()
+    get_redis_client.cache_clear()
     engine.dispose()
 
 
@@ -157,13 +165,13 @@ def test_post_detail_returns_counts_like_state_and_deleted_author_mask(
         deleted_author = User(
             nickname="gone", region_id=1, deleted_at=datetime.now(UTC)
         )
-        db.add(deleted_author)
+        legacy_liker = User(nickname="legacy-liker", region_id=1)
+        db.add_all([deleted_author, legacy_liker])
         db.flush()
         post = add_post(db, deleted_author.id, title="detail")
         hidden = add_post(
             db, viewer_id, title="hidden", deleted_at=datetime.now(UTC)
         )
-        db.add(PostLike(post_id=post.id, user_id=viewer_id))
         root = Comment(
             user_id=viewer_id,
             target_type=CommentTargetType.POST,
@@ -172,6 +180,7 @@ def test_post_detail_returns_counts_like_state_and_deleted_author_mask(
         )
         db.add(root)
         db.flush()
+        db.add(PostLike(post_id=post.id, user_id=legacy_liker.id))
         db.add_all(
             [
                 Comment(
@@ -192,6 +201,8 @@ def test_post_detail_returns_counts_like_state_and_deleted_author_mask(
         )
         db.commit()
         post_id, hidden_id = post.id, hidden.id
+
+    get_redis_client().sadd(post_like_key(post_id), viewer_id)
 
     response = client.get(f"/api/v1/posts/{post_id}", headers=auth(viewer_id))
 
@@ -276,6 +287,7 @@ def test_popular_posts_apply_score_window_exclusions_and_top_three(
     now = datetime.now(UTC)
     with Session(engine) as db:
         scored = [
+            (add_post(db, viewer_id, title="redis-score", created_at=now), 0),
             (add_post(db, viewer_id, title="score24", created_at=now), 12),
             (add_post(db, viewer_id, title="score22", created_at=now), 11),
             (add_post(db, viewer_id, title="tie-new", created_at=now), 10),
@@ -331,6 +343,11 @@ def test_popular_posts_apply_score_window_exclusions_and_top_three(
                 ]
             )
         db.commit()
+        redis_score_id = next(
+            post.id for post, _ in scored if post.title == "redis-score"
+        )
+
+    get_redis_client().sadd(post_like_key(redis_score_id), *range(100, 125))
 
     response = client.get(
         "/api/v1/chapters/seoul/posts/popular", headers=auth(viewer_id)
@@ -338,9 +355,9 @@ def test_popular_posts_apply_score_window_exclusions_and_top_three(
 
     assert response.status_code == 200
     assert [item["title"] for item in response.json()["items"]] == [
+        "redis-score",
         "score24",
         "score22",
-        "tie-new",
     ]
 
 
@@ -556,9 +573,15 @@ def test_like_post_is_idempotent_and_updates_list_and_detail(
         db.add(other)
         db.flush()
         post = add_post(db, viewer_id, title="liked")
-        db.add(PostLike(post_id=post.id, user_id=other.id))
         db.commit()
         post_id, other_id = post.id, other.id
+
+    redis = get_redis_client()
+    redis.sadd(post_like_key(post_id), other_id)
+    assert (
+        "requestBody"
+        not in app.openapi()["paths"]["/api/v1/posts/{postId}/likes"]["post"]
+    )
 
     first = client.post(
         f"/api/v1/posts/{post_id}/likes",
@@ -573,11 +596,13 @@ def test_like_post_is_idempotent_and_updates_list_and_detail(
     assert first.json() == {"likeCount": 2, "isLiked": True}
     assert second.status_code == 200
     assert second.json() == {"likeCount": 2, "isLiked": True}
+    assert redis.smembers(post_like_key(post_id)) == {str(viewer_id), str(other_id)}
     with Session(engine) as db:
-        likes = db.execute(
-            sa.select(PostLike.user_id).where(PostLike.post_id == post_id)
-        ).scalars().all()
-    assert sorted(likes) == sorted([viewer_id, other_id])
+        assert db.scalar(
+            sa.select(sa.func.count())
+            .select_from(PostLike)
+            .where(PostLike.post_id == post_id)
+        ) == 0
 
     listed = client.get(
         "/api/v1/chapters/seoul/posts", headers=auth(viewer_id)
@@ -598,14 +623,11 @@ def test_unlike_post_is_idempotent_and_preserves_other_users_like(
         db.add(other)
         db.flush()
         post = add_post(db, viewer_id, title="unliked")
-        db.add_all(
-            [
-                PostLike(post_id=post.id, user_id=viewer_id),
-                PostLike(post_id=post.id, user_id=other.id),
-            ]
-        )
         db.commit()
         post_id, other_id = post.id, other.id
+
+    redis = get_redis_client()
+    redis.sadd(post_like_key(post_id), viewer_id, other_id)
 
     first = client.delete(
         f"/api/v1/posts/{post_id}/likes", headers=auth(viewer_id)
@@ -618,11 +640,7 @@ def test_unlike_post_is_idempotent_and_preserves_other_users_like(
     assert first.json() == {"likeCount": 1, "isLiked": False}
     assert second.status_code == 200
     assert second.json() == {"likeCount": 1, "isLiked": False}
-    with Session(engine) as db:
-        likes = db.execute(
-            sa.select(PostLike.user_id).where(PostLike.post_id == post_id)
-        ).scalars().all()
-    assert likes == [other_id]
+    assert redis.smembers(post_like_key(post_id)) == {str(other_id)}
 
     listed = client.get(
         "/api/v1/chapters/seoul/posts", headers=auth(viewer_id)
@@ -643,9 +661,11 @@ def test_like_mutations_reject_missing_deleted_posts_and_invalid_auth(
         deleted = add_post(
             db, viewer_id, title="deleted", deleted_at=datetime.now(UTC)
         )
-        db.add(PostLike(post_id=deleted.id, user_id=viewer_id))
         db.commit()
         active_id, deleted_id = active.id, deleted.id
+
+    redis = get_redis_client()
+    redis.sadd(post_like_key(deleted_id), viewer_id)
 
     for method in (client.post, client.delete):
         assert method(
@@ -656,14 +676,103 @@ def test_like_mutations_reject_missing_deleted_posts_and_invalid_auth(
         ).status_code == 404
 
     assert client.post(f"/api/v1/posts/{active_id}/likes").status_code == 401
+    assert redis.exists(post_like_key(active_id)) == 0
+    assert redis.smembers(post_like_key(deleted_id)) == {str(viewer_id)}
+
+
+def test_list_batches_redis_like_stats_in_one_pipeline(
+    api: tuple[TestClient, sa.Engine, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        posts = [
+            add_post(db, viewer_id, title=f"post-{index}") for index in range(3)
+        ]
+        db.commit()
+        post_ids = [post.id for post in posts]
+
+    redis = get_redis_client()
+    for post_id in post_ids:
+        redis.sadd(post_like_key(post_id), viewer_id)
+    original_pipeline = redis.pipeline
+    pipeline_calls: list[bool] = []
+
+    def tracked_pipeline(*, transaction: bool = True):
+        pipeline_calls.append(transaction)
+        return original_pipeline(transaction=transaction)
+
+    monkeypatch.setattr(redis, "pipeline", tracked_pipeline)
+    response = client.get(
+        "/api/v1/chapters/seoul/posts", headers=auth(viewer_id)
+    )
+
+    assert response.status_code == 200
+    assert pipeline_calls == [False]
+    assert {
+        (item["id"], item["likeCount"], item["isLiked"])
+        for item in response.json()["items"]
+    } == {(post_id, 1, True) for post_id in post_ids}
+
+
+def test_redis_failure_returns_service_unavailable(
+    api: tuple[TestClient, sa.Engine, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        post = add_post(db, viewer_id, title="redis unavailable")
+        db.commit()
+        post_id = post.id
+
+    def failed_pipeline(*, transaction: bool = True):
+        raise RedisConnectionError("unavailable")
+
+    monkeypatch.setattr(get_redis_client(), "pipeline", failed_pipeline)
+
+    response = client.get(f"/api/v1/posts/{post_id}", headers=auth(viewer_id))
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Like service unavailable"}
+
+
+def test_redis_failure_rolls_back_post_writes_but_not_soft_delete(
+    api: tuple[TestClient, sa.Engine, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        post = add_post(db, viewer_id, title="original")
+        db.commit()
+        post_id = post.id
+
+    def failed_pipeline(*, transaction: bool = True):
+        raise RedisConnectionError("unavailable")
+
+    monkeypatch.setattr(get_redis_client(), "pipeline", failed_pipeline)
+
+    create_response = client.post(
+        "/api/v1/chapters/seoul/posts",
+        json={"boardCode": "question", "title": "rolled back", "body": "body"},
+        headers=auth(viewer_id),
+    )
+    update_response = client.patch(
+        f"/api/v1/posts/{post_id}",
+        json={"title": "also rolled back"},
+        headers=auth(viewer_id),
+    )
+
+    assert create_response.status_code == 503
+    assert update_response.status_code == 503
     with Session(engine) as db:
         assert db.scalar(
-            sa.select(sa.func.count())
-            .select_from(PostLike)
-            .where(PostLike.post_id == active_id)
+            sa.select(sa.func.count()).where(Post.title == "rolled back")
         ) == 0
-        assert db.scalar(
-            sa.select(sa.func.count())
-            .select_from(PostLike)
-            .where(PostLike.post_id == deleted_id)
-        ) == 1
+        unchanged = db.get(Post, post_id)
+        assert unchanged.title == "original"
+        assert unchanged.edited_at is None
+
+    delete_response = client.delete(
+        f"/api/v1/posts/{post_id}", headers=auth(viewer_id)
+    )
+
+    assert delete_response.status_code == 204
+    with Session(engine) as db:
+        assert db.get(Post, post_id).deleted_at is not None

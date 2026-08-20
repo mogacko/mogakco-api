@@ -44,7 +44,7 @@ def test_request_schemas_trim_and_enforce_contract() -> None:
         CommentCreateRequest(targetType="post", targetId=1, body="   ")
 
 
-def test_post_query_aggregates_once_and_masks_deleted_authors() -> None:
+def test_post_query_ignores_legacy_rdb_likes_and_masks_deleted_authors() -> None:
     command.upgrade(Config("alembic.ini"), "head")
     engine = sa.create_engine(DATABASE_URL)
 
@@ -122,7 +122,7 @@ def test_post_query_aggregates_once_and_masks_deleted_authors() -> None:
         sa.event.listen(engine, "before_cursor_execute", count_statement)
         try:
             rows = session.execute(
-                select_posts_with_stats(viewer_id).order_by(Post.id)
+                select_posts_with_stats().order_by(Post.id)
             ).mappings().all()
         finally:
             sa.event.remove(engine, "before_cursor_execute", count_statement)
@@ -132,9 +132,9 @@ def test_post_query_aggregates_once_and_masks_deleted_authors() -> None:
     assert statement_count == 1
     assert len(responses) == 3
     assert responses[0].chapterCode == "seoul"
-    assert responses[0].likeCount == 1
+    assert responses[0].likeCount == 0
     assert responses[0].commentCount == 2
-    assert responses[0].isLiked is True
+    assert responses[0].isLiked is False
     assert responses[0].authorNickname == "viewer"
     assert responses[1].authorId is None
     assert responses[1].authorNickname == "탈퇴한 사용자"

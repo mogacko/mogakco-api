@@ -2,13 +2,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import delete, func, or_, select
-from sqlalchemy.dialects.postgresql import insert
+from redis import Redis
+from redis.exceptions import RedisError
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models import Post, PostBoard, PostCategory, PostLike, Region, User
+from app.models import Post, PostBoard, PostCategory, Region, User
+from app.redis_client import get_redis_client
 from app.schemas import (
     LikeResponse,
     PopularPostsResponse,
@@ -19,8 +21,10 @@ from app.schemas import (
 )
 from app.services.community import (
     get_region_by_chapter_code,
+    get_post_like_stats,
     post_response_from_row,
     select_posts_with_stats,
+    set_post_liked,
     validate_post_category,
 )
 
@@ -45,11 +49,29 @@ def _editable_post(db: Session, post_id: int, user_id: int) -> Post:
     return post
 
 
-def _like_response(db: Session, post_id: int, is_liked: bool) -> LikeResponse:
-    like_count = db.scalar(
-        select(func.count(PostLike.id)).where(PostLike.post_id == post_id)
-    )
-    return LikeResponse(likeCount=like_count or 0, isLiked=is_liked)
+def _like_stats(
+    redis: Redis, post_ids: list[int], current_user_id: int
+) -> dict[int, tuple[int, bool]]:
+    try:
+        return get_post_like_stats(redis, post_ids, current_user_id)
+    except RedisError as error:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Like service unavailable"
+        ) from error
+
+
+def _post_responses(
+    rows: list, redis: Redis, current_user_id: int
+) -> list[PostResponse]:
+    stats = _like_stats(redis, [row["id"] for row in rows], current_user_id)
+    return [
+        post_response_from_row(
+            row,
+            like_count=stats[row["id"]][0],
+            is_liked=stats[row["id"]][1],
+        )
+        for row in rows
+    ]
 
 
 def _page_response(
@@ -58,11 +80,13 @@ def _page_response(
     offset: int,
     limit: int,
     total: int,
+    redis: Redis,
+    current_user_id: int,
     board_total: int | None = None,
     category_counts: dict[PostCategory, int] | None = None,
 ) -> PostPageResponse:
     return PostPageResponse(
-        items=[post_response_from_row(row) for row in rows],
+        items=_post_responses(rows, redis, current_user_id),
         offset=offset,
         limit=limit,
         total=total,
@@ -77,6 +101,7 @@ def list_posts(
     chapterCode: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
     boardCode: Annotated[PostBoard | None, Query()] = None,
     categoryCode: Annotated[PostCategory | None, Query()] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -114,7 +139,7 @@ def list_posts(
         category_counts.update({category: count for category, count in counts})
 
     rows = db.execute(
-        select_posts_with_stats(current_user.id)
+        select_posts_with_stats()
         .where(Post.region_id == region.id)
         .where(Post.board == boardCode if boardCode is not None else True)
         .where(Post.category == categoryCode if categoryCode is not None else True)
@@ -127,6 +152,8 @@ def list_posts(
         offset=offset,
         limit=limit,
         total=total,
+        redis=redis,
+        current_user_id=current_user.id,
         board_total=board_total,
         category_counts=category_counts,
     )
@@ -142,6 +169,7 @@ def create_post(
     request: PostCreateRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
 ) -> PostResponse:
     region = _enabled_region(db, chapterCode)
     if request.boardCode is PostBoard.NOTICE:
@@ -160,9 +188,9 @@ def create_post(
     db.add(post)
     db.flush()
     row = db.execute(
-        select_posts_with_stats(current_user.id).where(Post.id == post.id)
+        select_posts_with_stats().where(Post.id == post.id)
     ).mappings().one()
-    response = post_response_from_row(row)
+    response = _post_responses([row], redis, current_user.id)[0]
     db.commit()
     return response
 
@@ -172,6 +200,7 @@ def search_posts(
     chapterCode: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
     q: Annotated[str, Query()],
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
@@ -190,7 +219,7 @@ def search_posts(
         Post.body.ilike(pattern),
         User.deleted_at.is_(None) & User.nickname.ilike(pattern),
     )
-    base = select_posts_with_stats(current_user.id).where(
+    base = select_posts_with_stats().where(
         Post.region_id == region.id, search_filter
     )
     total = db.scalar(
@@ -201,7 +230,14 @@ def search_posts(
         .offset(offset)
         .limit(limit)
     ).mappings().all()
-    return _page_response(rows, offset=offset, limit=limit, total=total)
+    return _page_response(
+        rows,
+        offset=offset,
+        limit=limit,
+        total=total,
+        redis=redis,
+        current_user_id=current_user.id,
+    )
 
 
 @router.get("/chapters/{chapterCode}/posts/popular", response_model=PopularPostsResponse)
@@ -209,25 +245,41 @@ def popular_posts(
     chapterCode: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
 ) -> PopularPostsResponse:
     region = _enabled_region(db, chapterCode)
-    posts = (
-        select_posts_with_stats(current_user.id)
+    rows = db.execute(
+        select_posts_with_stats()
         .where(
             Post.region_id == region.id,
             Post.board != PostBoard.NOTICE,
             Post.created_at >= datetime.now(UTC) - timedelta(days=7),
         )
-        .subquery()
-    )
-    score = posts.c.like_count + posts.c.comment_count * 2
-    rows = db.execute(
-        select(posts)
-        .where(score >= 20)
-        .order_by(score.desc(), posts.c.created_at.desc(), posts.c.id.desc())
-        .limit(3)
     ).mappings().all()
-    return PopularPostsResponse(items=[post_response_from_row(row) for row in rows])
+    stats = _like_stats(redis, [row["id"] for row in rows], current_user.id)
+    rows = sorted(
+        (
+            row
+            for row in rows
+            if stats[row["id"]][0] + row["comment_count"] * 2 >= 20
+        ),
+        key=lambda row: (
+            stats[row["id"]][0] + row["comment_count"] * 2,
+            row["created_at"],
+            row["id"],
+        ),
+        reverse=True,
+    )[:3]
+    return PopularPostsResponse(
+        items=[
+            post_response_from_row(
+                row,
+                like_count=stats[row["id"]][0],
+                is_liked=stats[row["id"]][1],
+            )
+            for row in rows
+        ]
+    )
 
 
 @router.get("/posts/{postId}", response_model=PostResponse)
@@ -235,13 +287,14 @@ def get_post(
     postId: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
 ) -> PostResponse:
     row = db.execute(
-        select_posts_with_stats(current_user.id).where(Post.id == postId)
+        select_posts_with_stats().where(Post.id == postId)
     ).mappings().one_or_none()
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Post not found")
-    return post_response_from_row(row)
+    return _post_responses([row], redis, current_user.id)[0]
 
 
 @router.post("/posts/{postId}/likes", response_model=LikeResponse)
@@ -249,6 +302,7 @@ def like_post(
     postId: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
 ) -> LikeResponse:
     post = db.scalar(
         select(Post).where(Post.id == postId, Post.deleted_at.is_(None))
@@ -256,13 +310,15 @@ def like_post(
     if post is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Post not found")
 
-    db.execute(
-        insert(PostLike)
-        .values(post_id=postId, user_id=current_user.id)
-        .on_conflict_do_nothing(constraint="uq_post_likes_post_user")
-    )
-    db.commit()
-    return _like_response(db, postId, True)
+    try:
+        like_count, is_liked = set_post_liked(
+            redis, postId, current_user.id, liked=True
+        )
+    except RedisError as error:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Like service unavailable"
+        ) from error
+    return LikeResponse(likeCount=like_count, isLiked=is_liked)
 
 
 @router.delete("/posts/{postId}/likes", response_model=LikeResponse)
@@ -270,6 +326,7 @@ def unlike_post(
     postId: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
 ) -> LikeResponse:
     post = db.scalar(
         select(Post).where(Post.id == postId, Post.deleted_at.is_(None))
@@ -277,14 +334,15 @@ def unlike_post(
     if post is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Post not found")
 
-    db.execute(
-        delete(PostLike).where(
-            PostLike.post_id == postId,
-            PostLike.user_id == current_user.id,
+    try:
+        like_count, is_liked = set_post_liked(
+            redis, postId, current_user.id, liked=False
         )
-    )
-    db.commit()
-    return _like_response(db, postId, False)
+    except RedisError as error:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Like service unavailable"
+        ) from error
+    return LikeResponse(likeCount=like_count, isLiked=is_liked)
 
 
 @router.patch("/posts/{postId}", response_model=PostResponse)
@@ -293,6 +351,7 @@ def update_post(
     request: PostUpdateRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
 ) -> PostResponse:
     post = _editable_post(db, postId, current_user.id)
     if "categoryCode" in request.model_fields_set:
@@ -311,9 +370,9 @@ def update_post(
 
     db.flush()
     row = db.execute(
-        select_posts_with_stats(current_user.id).where(Post.id == post.id)
+        select_posts_with_stats().where(Post.id == post.id)
     ).mappings().one()
-    response = post_response_from_row(row)
+    response = _post_responses([row], redis, current_user.id)[0]
     db.commit()
     return response
 

@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from redis import Redis
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
@@ -12,7 +13,6 @@ from app.models import (
     Post,
     PostBoard,
     PostCategory,
-    PostLike,
     Region,
     User,
 )
@@ -52,15 +52,7 @@ def serialize_author(
     }
 
 
-def select_posts_with_stats(current_user_id: int) -> Select:
-    like_counts = (
-        select(
-            PostLike.post_id.label("post_id"),
-            func.count(PostLike.id).label("like_count"),
-        )
-        .group_by(PostLike.post_id)
-        .subquery()
-    )
+def select_posts_with_stats() -> Select:
     comment_counts = (
         select(
             Comment.target_id.label("post_id"),
@@ -73,12 +65,6 @@ def select_posts_with_stats(current_user_id: int) -> Select:
         .group_by(Comment.target_id)
         .subquery()
     )
-    liked_posts = (
-        select(PostLike.post_id.label("post_id"))
-        .where(PostLike.user_id == current_user_id)
-        .subquery()
-    )
-
     return (
         select(
             Post.id,
@@ -92,20 +78,55 @@ def select_posts_with_stats(current_user_id: int) -> Select:
             User.deleted_at.label("author_deleted_at"),
             Post.created_at,
             Post.edited_at,
-            func.coalesce(like_counts.c.like_count, 0).label("like_count"),
             func.coalesce(comment_counts.c.comment_count, 0).label("comment_count"),
-            liked_posts.c.post_id.is_not(None).label("is_liked"),
         )
         .join(Region, Region.id == Post.region_id)
         .outerjoin(User, User.id == Post.author_id)
-        .outerjoin(like_counts, like_counts.c.post_id == Post.id)
         .outerjoin(comment_counts, comment_counts.c.post_id == Post.id)
-        .outerjoin(liked_posts, liked_posts.c.post_id == Post.id)
         .where(Post.deleted_at.is_(None))
     )
 
 
-def post_response_from_row(row: Mapping[str, Any]) -> "PostResponse":
+def post_like_key(post_id: int) -> str:
+    return f"post:like:{post_id}:users"
+
+
+def get_post_like_stats(
+    redis: Redis, post_ids: list[int], current_user_id: int
+) -> dict[int, tuple[int, bool]]:
+    unique_ids = list(dict.fromkeys(post_ids))
+    if not unique_ids:
+        return {}
+
+    pipeline = redis.pipeline(transaction=False)
+    for post_id in unique_ids:
+        key = post_like_key(post_id)
+        pipeline.scard(key)
+        pipeline.sismember(key, current_user_id)
+    results = pipeline.execute()
+    return {
+        post_id: (int(results[index]), bool(results[index + 1]))
+        for index, post_id in zip(range(0, len(results), 2), unique_ids)
+    }
+
+
+def set_post_liked(
+    redis: Redis, post_id: int, user_id: int, *, liked: bool
+) -> tuple[int, bool]:
+    key = post_like_key(post_id)
+    pipeline = redis.pipeline(transaction=True)
+    if liked:
+        pipeline.sadd(key, user_id)
+    else:
+        pipeline.srem(key, user_id)
+    pipeline.scard(key)
+    _, like_count = pipeline.execute()
+    return int(like_count), liked
+
+
+def post_response_from_row(
+    row: Mapping[str, Any], *, like_count: int = 0, is_liked: bool = False
+) -> "PostResponse":
     from app.schemas import PostResponse
 
     return PostResponse(
@@ -117,9 +138,9 @@ def post_response_from_row(row: Mapping[str, Any]) -> "PostResponse":
         body=row["body"],
         createdAt=row["created_at"],
         editedAt=row["edited_at"],
-        likeCount=row["like_count"],
+        likeCount=like_count,
         commentCount=row["comment_count"],
-        isLiked=row["is_liked"],
+        isLiked=is_liked,
         **serialize_author(
             row["author_id"], row["author_nickname"], row["author_deleted_at"]
         ),
