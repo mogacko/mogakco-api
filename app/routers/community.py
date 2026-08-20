@@ -198,6 +198,30 @@ def update_comment(
     return response
 
 
+@router.delete("/comments/{commentId}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_comment(
+    commentId: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Response:
+    comment = db.scalar(
+        select(Comment).where(
+            Comment.id == commentId,
+            Comment.deleted_at.is_(None),
+        )
+    )
+    if comment is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Comment not found")
+    if comment.user_id != current_user.id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Not the comment author"
+        )
+
+    comment.deleted_at = datetime.now(UTC)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/chapters/{chapterCode}/posts", response_model=PostPageResponse)
 def list_posts(
     chapterCode: str,

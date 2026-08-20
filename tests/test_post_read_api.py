@@ -1541,3 +1541,274 @@ def test_update_comment_validates_body_auth_and_extra_fields(
         unchanged = db.get(Comment, comment_id)
         assert unchanged.content == "original"
         assert unchanged.updated_at is None
+
+
+def test_delete_root_soft_deletes_preserves_data_and_updates_counts(
+    api: tuple[TestClient, sa.Engine, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, engine, viewer_id = api
+    created_at = datetime.now(UTC) - timedelta(minutes=1)
+    updated_at = created_at + timedelta(seconds=1)
+    with Session(engine) as db:
+        post = add_post(db, viewer_id, title="delete root")
+        db.flush()
+        root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=viewer_id,
+            content="root secret",
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+        db.add(root)
+        db.flush()
+        post_id, root_id = post.id, root.id
+        preserved = {
+            "uuid": root.uuid,
+            "target_type": root.target_type,
+            "target_id": root.target_id,
+            "parent_comment_id": root.parent_comment_id,
+            "user_id": root.user_id,
+            "content": root.content,
+            "created_at": root.created_at,
+            "updated_at": root.updated_at,
+        }
+        db.commit()
+
+    redis = get_redis_client()
+    like_key = post_like_key(post_id)
+    redis.sadd(like_key, *range(10_000, 10_018))
+    assert client.get(
+        "/api/v1/chapters/seoul/posts/popular", headers=auth(viewer_id)
+    ).json()["items"][0]["id"] == post_id
+
+    original_pipeline = redis.pipeline
+
+    def failed_pipeline(*, transaction: bool = True):
+        raise RedisConnectionError("unavailable")
+
+    monkeypatch.setattr(redis, "pipeline", failed_pipeline)
+    response = client.delete(
+        f"/api/v1/comments/{root_id}", headers=auth(viewer_id)
+    )
+    assert response.status_code == 204
+    assert response.content == b""
+
+    with Session(engine) as db:
+        stored = db.get(Comment, root_id)
+        assert stored is not None
+        assert stored.deleted_at is not None
+        for field, value in preserved.items():
+            assert getattr(stored, field) == value
+
+    listed = client.get(
+        f"/api/v1/comments?targetType=post&targetId={post_id}",
+        headers=auth(viewer_id),
+    )
+    assert listed.status_code == 200
+    assert listed.json() == {"count": 0, "items": []}
+    assert "root secret" not in listed.text
+    assert client.delete(
+        f"/api/v1/comments/{root_id}", headers=auth(viewer_id)
+    ).status_code == 404
+    assert client.patch(
+        f"/api/v1/comments/{root_id}",
+        json={"body": "restore"},
+        headers=auth(viewer_id),
+    ).status_code == 404
+    assert client.post(
+        "/api/v1/comments",
+        json={
+            "targetType": "post",
+            "targetId": post_id,
+            "parentId": root_id,
+            "body": "new reply",
+        },
+        headers=auth(viewer_id),
+    ).status_code == 404
+
+    monkeypatch.setattr(redis, "pipeline", original_pipeline)
+    detail = client.get(f"/api/v1/posts/{post_id}", headers=auth(viewer_id))
+    assert detail.status_code == 200
+    assert detail.json()["commentCount"] == 0
+    popular = client.get(
+        "/api/v1/chapters/seoul/posts/popular", headers=auth(viewer_id)
+    )
+    assert popular.status_code == 200
+    assert popular.json()["items"] == []
+    assert redis.scard(like_key) == 18
+
+
+def test_delete_root_and_replies_keeps_only_threads_with_active_comments(
+    api: tuple[TestClient, sa.Engine, int]
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        post = add_post(db, viewer_id, title="delete thread")
+        db.flush()
+        root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=viewer_id,
+            content="deleted root secret",
+        )
+        db.add(root)
+        db.flush()
+        replies = [
+            Comment(
+                target_type=CommentTargetType.POST,
+                target_id=post.id,
+                parent_comment_id=root.id,
+                user_id=viewer_id,
+                content=body,
+            )
+            for body in ("reply one", "reply two")
+        ]
+        db.add_all(replies)
+        db.flush()
+        ids = {
+            "post": post.id,
+            "root": root.id,
+            "replies": [reply.id for reply in replies],
+        }
+        db.commit()
+
+    detail = client.get(
+        f"/api/v1/posts/{ids['post']}", headers=auth(viewer_id)
+    )
+    assert detail.json()["commentCount"] == 3
+
+    assert client.delete(
+        f"/api/v1/comments/{ids['root']}", headers=auth(viewer_id)
+    ).status_code == 204
+    with Session(engine) as db:
+        assert db.get(Comment, ids["root"]).deleted_at is not None
+        assert all(
+            db.get(Comment, reply_id).deleted_at is None
+            for reply_id in ids["replies"]
+        )
+
+    listed = client.get(
+        f"/api/v1/comments?targetType=post&targetId={ids['post']}",
+        headers=auth(viewer_id),
+    )
+    thread = listed.json()["items"][0]
+    assert listed.json()["count"] == 2
+    assert thread["masked"] is True
+    assert thread["comment"]["isDeleted"] is True
+    assert thread["comment"]["body"] == ""
+    assert [reply["body"] for reply in thread["replies"]] == [
+        "reply one",
+        "reply two",
+    ]
+    assert "deleted root secret" not in listed.text
+    assert client.get(
+        f"/api/v1/posts/{ids['post']}", headers=auth(viewer_id)
+    ).json()["commentCount"] == 2
+
+    assert client.delete(
+        f"/api/v1/comments/{ids['replies'][0]}",
+        headers=auth(viewer_id),
+    ).status_code == 204
+    listed = client.get(
+        f"/api/v1/comments?targetType=post&targetId={ids['post']}",
+        headers=auth(viewer_id),
+    )
+    assert listed.json()["count"] == 1
+    assert [reply["id"] for reply in listed.json()["items"][0]["replies"]] == [
+        ids["replies"][1]
+    ]
+    assert client.get(
+        f"/api/v1/posts/{ids['post']}", headers=auth(viewer_id)
+    ).json()["commentCount"] == 1
+
+    assert client.delete(
+        f"/api/v1/comments/{ids['replies'][1]}",
+        headers=auth(viewer_id),
+    ).status_code == 204
+    listed = client.get(
+        f"/api/v1/comments?targetType=post&targetId={ids['post']}",
+        headers=auth(viewer_id),
+    )
+    assert listed.json() == {"count": 0, "items": []}
+    assert client.get(
+        f"/api/v1/posts/{ids['post']}", headers=auth(viewer_id)
+    ).json()["commentCount"] == 0
+    with Session(engine) as db:
+        assert all(
+            db.get(Comment, reply_id).deleted_at is not None
+            for reply_id in ids["replies"]
+        )
+
+
+def test_delete_comment_rejects_invalid_state_auth_and_ownership(
+    api: tuple[TestClient, sa.Engine, int]
+) -> None:
+    client, engine, viewer_id = api
+    deleted_at = datetime.now(UTC)
+    with Session(engine) as db:
+        other = User(nickname="delete-other", region_id=1)
+        removed = User(nickname="delete-removed", region_id=1)
+        db.add_all([other, removed])
+        db.flush()
+        post = add_post(db, viewer_id, title="delete validation")
+        db.flush()
+        other_comment = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=other.id,
+            content="other original",
+        )
+        deleted_comment = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=viewer_id,
+            content="already deleted",
+            deleted_at=deleted_at,
+        )
+        removed_author_comment = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=removed.id,
+            content="removed original",
+        )
+        db.add_all([other_comment, deleted_comment, removed_author_comment])
+        db.flush()
+        ids = {
+            "other": other_comment.id,
+            "deleted": deleted_comment.id,
+            "removed": removed_author_comment.id,
+        }
+        db.delete(removed)
+        db.commit()
+
+    endpoint = f"/api/v1/comments/{ids['other']}"
+    assert client.delete(endpoint).status_code == 401
+    assert client.delete(
+        endpoint, headers={"X-Debug-User-Id": "invalid"}
+    ).status_code == 401
+    assert client.delete(
+        "/api/v1/comments/not-an-integer", headers=auth(viewer_id)
+    ).status_code == 422
+
+    for comment_id, expected_status in (
+        (999999, 404),
+        (ids["deleted"], 404),
+        (ids["other"], 403),
+        (ids["removed"], 403),
+    ):
+        assert client.delete(
+            f"/api/v1/comments/{comment_id}", headers=auth(viewer_id)
+        ).status_code == expected_status
+
+    assert "requestBody" not in app.openapi()["paths"][
+        "/api/v1/comments/{commentId}"
+    ]["delete"]
+    with Session(engine) as db:
+        assert db.get(Comment, ids["other"]).deleted_at is None
+        assert db.get(Comment, ids["other"]).content == "other original"
+        assert db.get(Comment, ids["deleted"]).deleted_at == deleted_at
+        removed_comment = db.get(Comment, ids["removed"])
+        assert removed_comment.deleted_at is None
+        assert removed_comment.user_id is None
+        assert removed_comment.content == "removed original"
