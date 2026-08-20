@@ -1301,3 +1301,243 @@ def test_create_comment_validates_target_body_auth_and_spoofed_author(
     }
     with Session(engine) as db:
         assert db.scalar(sa.select(sa.func.count()).select_from(Comment)) == 0
+
+
+def test_update_root_and_reply_reuses_dto_and_preserves_thread_and_count(
+    api: tuple[TestClient, sa.Engine, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, engine, viewer_id = api
+    base = datetime(2026, 8, 15, tzinfo=UTC)
+    with Session(engine) as db:
+        post = add_post(db, viewer_id, title="update comments")
+        db.flush()
+        root = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=viewer_id,
+            content="root before",
+            created_at=base,
+            updated_at=base,
+        )
+        db.add(root)
+        db.flush()
+        reply = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            parent_comment_id=root.id,
+            user_id=viewer_id,
+            content="reply before",
+            created_at=base + timedelta(minutes=1),
+            updated_at=base,
+        )
+        db.add(reply)
+        db.flush()
+        ids = {"post": post.id, "root": root.id, "reply": reply.id}
+        immutable = {
+            "root_uuid": root.uuid,
+            "reply_uuid": reply.uuid,
+            "root_created_at": root.created_at,
+            "reply_created_at": reply.created_at,
+        }
+        db.commit()
+
+    redis = get_redis_client()
+    original_pipeline = redis.pipeline
+    before = client.get(
+        f"/api/v1/posts/{ids['post']}", headers=auth(viewer_id)
+    )
+    assert before.status_code == 200
+    assert before.json()["commentCount"] == 2
+
+    def failed_pipeline(*, transaction: bool = True):
+        raise RedisConnectionError("unavailable")
+
+    monkeypatch.setattr(redis, "pipeline", failed_pipeline)
+    root_response = client.patch(
+        f"/api/v1/comments/{ids['root']}",
+        json={"body": "  x  "},
+        headers=auth(viewer_id),
+    )
+    reply_body = "r" * 300
+    reply_response = client.patch(
+        f"/api/v1/comments/{ids['reply']}",
+        json={"body": reply_body},
+        headers=auth(viewer_id),
+    )
+
+    assert root_response.status_code == 200
+    assert reply_response.status_code == 200
+    root_payload = root_response.json()
+    reply_payload = reply_response.json()
+    assert root_payload["body"] == "x"
+    assert root_payload["parentId"] is None
+    assert reply_payload["body"] == reply_body
+    assert reply_payload["parentId"] == ids["root"]
+    for payload in (root_payload, reply_payload):
+        assert payload["targetType"] == "post"
+        assert payload["targetId"] == ids["post"]
+        assert payload["authorId"] == viewer_id
+        assert payload["authorNickname"] == "viewer"
+        assert payload["editedAt"] is not None
+        assert payload["isDeleted"] is False
+        assert payload["isMine"] is True
+
+    same_body = client.patch(
+        f"/api/v1/comments/{ids['root']}",
+        json={"body": "x"},
+        headers=auth(viewer_id),
+    )
+    assert same_body.status_code == 200
+    assert datetime.fromisoformat(same_body.json()["editedAt"]) > datetime.fromisoformat(
+        root_payload["editedAt"]
+    )
+
+    with Session(engine) as db:
+        stored_root = db.get(Comment, ids["root"])
+        stored_reply = db.get(Comment, ids["reply"])
+        assert stored_root.content == "x"
+        assert stored_reply.content == reply_body
+        assert stored_root.uuid == immutable["root_uuid"]
+        assert stored_reply.uuid == immutable["reply_uuid"]
+        assert stored_root.created_at == immutable["root_created_at"]
+        assert stored_reply.created_at == immutable["reply_created_at"]
+        assert stored_root.parent_comment_id is None
+        assert stored_reply.parent_comment_id == ids["root"]
+        assert stored_root.target_id == stored_reply.target_id == ids["post"]
+        assert stored_root.user_id == stored_reply.user_id == viewer_id
+        assert stored_root.deleted_at is None
+        assert stored_reply.deleted_at is None
+
+    listed = client.get(
+        f"/api/v1/comments?targetType=post&targetId={ids['post']}",
+        headers=auth(viewer_id),
+    )
+    assert listed.status_code == 200
+    assert listed.json()["count"] == 2
+    thread = listed.json()["items"][0]
+    assert thread["comment"]["body"] == "x"
+    assert thread["comment"]["editedAt"] == same_body.json()["editedAt"]
+    assert thread["replies"][0]["body"] == reply_body
+    assert thread["replies"][0]["editedAt"] == reply_payload["editedAt"]
+
+    monkeypatch.setattr(redis, "pipeline", original_pipeline)
+    after = client.get(
+        f"/api/v1/posts/{ids['post']}", headers=auth(viewer_id)
+    )
+    assert after.status_code == 200
+    assert after.json()["commentCount"] == 2
+
+
+def test_update_comment_rejects_missing_deleted_other_and_deleted_author(
+    api: tuple[TestClient, sa.Engine, int]
+) -> None:
+    client, engine, viewer_id = api
+    now = datetime.now(UTC)
+    with Session(engine) as db:
+        other = User(nickname="other", region_id=1)
+        removed = User(nickname="removed", region_id=1)
+        db.add_all([other, removed])
+        db.flush()
+        post = add_post(db, viewer_id, title="protected comments")
+        db.flush()
+        other_comment = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=other.id,
+            content="other original",
+        )
+        deleted_comment = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=viewer_id,
+            content="deleted original",
+            deleted_at=now,
+        )
+        removed_author_comment = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=removed.id,
+            content="removed original",
+        )
+        db.add_all([other_comment, deleted_comment, removed_author_comment])
+        db.flush()
+        ids = {
+            "other": other_comment.id,
+            "deleted": deleted_comment.id,
+            "removed": removed_author_comment.id,
+        }
+        db.delete(removed)
+        db.commit()
+
+    for comment_id, expected_status in (
+        (999999, 404),
+        (ids["deleted"], 404),
+        (ids["other"], 403),
+        (ids["removed"], 403),
+    ):
+        response = client.patch(
+            f"/api/v1/comments/{comment_id}",
+            json={"body": "must fail"},
+            headers=auth(viewer_id),
+        )
+        assert response.status_code == expected_status
+
+    with Session(engine) as db:
+        assert db.get(Comment, ids["other"]).content == "other original"
+        assert db.get(Comment, ids["deleted"]).content == "deleted original"
+        removed_comment = db.get(Comment, ids["removed"])
+        assert removed_comment.content == "removed original"
+        assert removed_comment.user_id is None
+
+
+def test_update_comment_validates_body_auth_and_extra_fields(
+    api: tuple[TestClient, sa.Engine, int]
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        post = add_post(db, viewer_id, title="validation")
+        db.flush()
+        comment = Comment(
+            target_type=CommentTargetType.POST,
+            target_id=post.id,
+            user_id=viewer_id,
+            content="original",
+        )
+        db.add(comment)
+        db.commit()
+        comment_id = comment.id
+
+    endpoint = f"/api/v1/comments/{comment_id}"
+    assert client.patch(endpoint, json={"body": "x"}).status_code == 401
+    assert client.patch(
+        endpoint,
+        json={"body": "x"},
+        headers={"X-Debug-User-Id": "invalid"},
+    ).status_code == 401
+    assert client.patch(
+        "/api/v1/comments/not-an-integer",
+        json={"body": "x"},
+        headers=auth(viewer_id),
+    ).status_code == 422
+
+    invalid_payloads = (
+        {},
+        {"body": "   "},
+        {"body": "x" * 301},
+        {"body": "x", "targetType": "post"},
+        {"body": "x", "targetId": 1},
+        {"body": "x", "parentId": 1},
+        {"body": "x", "authorId": viewer_id},
+        {"body": "x", "userId": viewer_id},
+    )
+    for payload in invalid_payloads:
+        assert client.patch(
+            endpoint, json=payload, headers=auth(viewer_id)
+        ).status_code == 422
+
+    schema = app.openapi()["components"]["schemas"]["CommentUpdateRequest"]
+    assert set(schema["properties"]) == {"body"}
+    with Session(engine) as db:
+        unchanged = db.get(Comment, comment_id)
+        assert unchanged.content == "original"
+        assert unchanged.updated_at is None

@@ -23,6 +23,7 @@ from app.schemas import (
     CommentCreateRequest,
     CommentResponse,
     CommentThreadResponse,
+    CommentUpdateRequest,
     LikeResponse,
     PopularPostsResponse,
     PostCreateRequest,
@@ -163,6 +164,34 @@ def create_comment(
         content=request.body,
     )
     db.add(comment)
+    db.flush()
+    response = created_comment_response(comment, current_user)
+    db.commit()
+    return response
+
+
+@router.patch("/comments/{commentId}", response_model=CommentResponse)
+def update_comment(
+    commentId: int,
+    request: CommentUpdateRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> CommentResponse:
+    comment = db.scalar(
+        select(Comment).where(
+            Comment.id == commentId,
+            Comment.deleted_at.is_(None),
+        )
+    )
+    if comment is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Comment not found")
+    if comment.user_id != current_user.id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Not the comment author"
+        )
+
+    comment.content = request.body
+    comment.updated_at = datetime.now(UTC)
     db.flush()
     response = created_comment_response(comment, current_user)
     db.commit()
