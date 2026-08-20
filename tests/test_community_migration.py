@@ -48,7 +48,7 @@ def test_community_migration_constraints_and_delete_rules() -> None:
         )
         comment_id = connection.scalar(
             sa.text(
-                "INSERT INTO comments (author_id, target_type, target_id, body) "
+                "INSERT INTO comments (user_id, target_type, target_id, content) "
                 "VALUES (:user_id, 'post', :post_id, 'comment') RETURNING id"
             ),
             {"user_id": user_id, "post_id": post_id},
@@ -63,7 +63,7 @@ def test_community_migration_constraints_and_delete_rules() -> None:
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
             sa.text(
-                "INSERT INTO comments (target_type, target_id, body) "
+                "INSERT INTO comments (target_type, target_id, content) "
                 "VALUES ('other', :post_id, 'comment')"
             ),
             {"post_id": post_id},
@@ -81,16 +81,17 @@ def test_community_migration_constraints_and_delete_rules() -> None:
     with pytest.raises(sa.exc.DataError), engine.begin() as connection:
         connection.execute(
             sa.text(
-                "INSERT INTO comments (target_type, target_id, body) "
-                "VALUES ('post', :post_id, :body)"
+                "INSERT INTO comments (target_type, target_id, content) "
+                "VALUES ('post', :post_id, :content)"
             ),
-            {"post_id": post_id, "body": "x" * 301},
+            {"post_id": post_id, "content": "x" * 301},
         )
 
     with engine.begin() as connection:
         reply_id = connection.scalar(
             sa.text(
-                "INSERT INTO comments (target_type, target_id, parent_id, body) "
+                "INSERT INTO comments "
+                "(target_type, target_id, parent_comment_id, content) "
                 "VALUES ('post', :post_id, :parent_id, 'reply') RETURNING id"
             ),
             {"post_id": post_id, "parent_id": comment_id},
@@ -111,7 +112,7 @@ def test_community_migration_constraints_and_delete_rules() -> None:
             {"post_id": post_id},
         )
         comment_authors = connection.execute(
-            sa.text("SELECT author_id FROM comments WHERE id IN (:root, :reply)"),
+            sa.text("SELECT user_id FROM comments WHERE id IN (:root, :reply)"),
             {"root": comment_id, "reply": reply_id},
         ).scalars().all()
         like_count = connection.scalar(sa.text("SELECT count(*) FROM post_likes"))
@@ -126,6 +127,21 @@ def test_community_migration_constraints_and_delete_rules() -> None:
     assert "ix_posts_region_board_created" in post_indexes
     assert "ix_posts_region_board_category_created" in post_indexes
     assert not any("chapter" in name for name in post_indexes)
+    comment_columns = {
+        column["name"] for column in sa.inspect(engine).get_columns("comments")
+    }
+    assert comment_columns == {
+        "id",
+        "uuid",
+        "target_type",
+        "user_id",
+        "content",
+        "parent_comment_id",
+        "target_id",
+        "updated_at",
+        "created_at",
+        "deleted_at",
+    }
 
     with engine.begin() as connection:
         second_user_id = connection.scalar(

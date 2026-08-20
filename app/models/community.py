@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     CheckConstraint,
@@ -11,7 +12,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -114,12 +117,18 @@ class Comment(Base):
             "target_id",
             "created_at",
         ),
-        Index("ix_comments_parent_id", "parent_id"),
-        Index("ix_comments_author_id", "author_id"),
+        UniqueConstraint("uuid", name="uq_comments_uuid"),
+        Index("ix_comments_parent_comment_id", "parent_comment_id"),
+        Index("ix_comments_user_id", "user_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    author_id: Mapped[int | None] = mapped_column(
+    uuid: Mapped[UUID] = mapped_column(
+        Uuid,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
     target_type: Mapped[CommentTargetType] = mapped_column(
@@ -131,12 +140,12 @@ class Comment(Base):
         )
     )
     target_id: Mapped[int] = mapped_column(Integer)
-    parent_id: Mapped[int | None] = mapped_column(
+    parent_comment_id: Mapped[int | None] = mapped_column(
         ForeignKey("comments.id", ondelete="RESTRICT")
     )
-    body: Mapped[str] = mapped_column(String(300))
+    content: Mapped[str] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
-    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -165,27 +165,27 @@ def test_post_detail_returns_counts_like_state_and_deleted_author_mask(
         )
         db.add(PostLike(post_id=post.id, user_id=viewer_id))
         root = Comment(
-            author_id=viewer_id,
+            user_id=viewer_id,
             target_type=CommentTargetType.POST,
             target_id=post.id,
-            body="root",
+            content="root",
         )
         db.add(root)
         db.flush()
         db.add_all(
             [
                 Comment(
-                    author_id=viewer_id,
+                    user_id=viewer_id,
                     target_type=CommentTargetType.POST,
                     target_id=post.id,
-                    parent_id=root.id,
-                    body="reply",
+                    parent_comment_id=root.id,
+                    content="reply",
                 ),
                 Comment(
-                    author_id=viewer_id,
+                    user_id=viewer_id,
                     target_type=CommentTargetType.POST,
                     target_id=post.id,
-                    body="deleted",
+                    content="deleted",
                     deleted_at=datetime.now(UTC),
                 ),
             ]
@@ -322,10 +322,10 @@ def test_popular_posts_apply_score_window_exclusions_and_top_three(
             db.add_all(
                 [
                     Comment(
-                        author_id=viewer_id,
+                        user_id=viewer_id,
                         target_type=CommentTargetType.POST,
                         target_id=post.id,
-                        body=f"comment-{index}",
+                        content=f"comment-{index}",
                     )
                     for index in range(count)
                 ]
@@ -342,3 +342,206 @@ def test_popular_posts_apply_score_window_exclusions_and_top_three(
         "score22",
         "tie-new",
     ]
+
+
+def test_create_post_uses_current_user_path_region_and_validates_permissions(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, engine, viewer_id = api
+    payload = {
+        "boardCode": "talk",
+        "categoryCode": "free",
+        "title": f" {'t' * 60} ",
+        "body": f" {'b' * 10_000} ",
+    }
+
+    response = client.post(
+        "/api/v1/chapters/busan/posts",
+        json=payload,
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["chapterCode"] == "busan"
+    assert body["authorId"] == viewer_id
+    assert body["boardCode"] == "talk"
+    assert body["categoryCode"] == "free"
+    assert body["title"] == payload["title"].strip()
+    assert body["body"] == payload["body"].strip()
+    with Session(engine) as db:
+        created = db.get(Post, body["id"])
+        assert created is not None
+        assert created.author_id == viewer_id
+        assert created.region_id == 2
+
+    invalid_cases = [
+        (
+            "/api/v1/chapters/seoul/posts",
+            {"boardCode": "notice", "title": "notice", "body": "body"},
+            403,
+        ),
+        (
+            "/api/v1/chapters/gyeonggi/posts",
+            {"boardCode": "question", "title": "title", "body": "body"},
+            404,
+        ),
+        (
+            "/api/v1/chapters/unknown/posts",
+            {"boardCode": "question", "title": "title", "body": "body"},
+            404,
+        ),
+        (
+            "/api/v1/chapters/seoul/posts",
+            {
+                "boardCode": "question",
+                "categoryCode": "free",
+                "title": "title",
+                "body": "body",
+            },
+            422,
+        ),
+        (
+            "/api/v1/chapters/seoul/posts",
+            {"boardCode": "talk", "title": "title", "body": "body"},
+            422,
+        ),
+        (
+            "/api/v1/chapters/seoul/posts",
+            {"boardCode": "question", "title": "x" * 61, "body": "body"},
+            422,
+        ),
+        (
+            "/api/v1/chapters/seoul/posts",
+            {"boardCode": "question", "title": "title", "body": "x" * 10_001},
+            422,
+        ),
+    ]
+    for path, invalid_payload, expected_status in invalid_cases:
+        assert (
+            client.post(path, json=invalid_payload, headers=auth(viewer_id)).status_code
+            == expected_status
+        )
+    assert client.post(
+        "/api/v1/chapters/seoul/posts",
+        json={"boardCode": "question", "title": "title", "body": "body"},
+    ).status_code == 401
+    with Session(engine) as db:
+        assert db.scalar(sa.select(sa.func.count()).select_from(Post)) == 1
+
+
+def test_update_post_is_partial_owner_only_and_preserves_board_region(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        other = User(nickname="other", region_id=1)
+        db.add(other)
+        db.flush()
+        owned = add_post(
+            db,
+            viewer_id,
+            title="before",
+            board=PostBoard.TALK,
+            category=PostCategory.FREE,
+            region_id=2,
+        )
+        foreign = add_post(db, other.id, title="foreign")
+        deleted = add_post(
+            db, viewer_id, title="deleted", deleted_at=datetime.now(UTC)
+        )
+        db.commit()
+        owned_id, foreign_id, deleted_id = owned.id, foreign.id, deleted.id
+
+    response = client.patch(
+        f"/api/v1/posts/{owned_id}",
+        json={"title": "  after  ", "categoryCode": "recruit"},
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "after"
+    assert body["body"] == "body"
+    assert body["categoryCode"] == "recruit"
+    assert body["boardCode"] == "talk"
+    assert body["chapterCode"] == "busan"
+    assert body["editedAt"] is not None
+    assert client.patch(
+        f"/api/v1/posts/{foreign_id}",
+        json={"title": "blocked"},
+        headers=auth(viewer_id),
+    ).status_code == 403
+    assert client.patch(
+        f"/api/v1/posts/{owned_id}",
+        json={"categoryCode": None},
+        headers=auth(viewer_id),
+    ).status_code == 422
+    assert client.patch(
+        f"/api/v1/posts/{deleted_id}",
+        json={"title": "blocked"},
+        headers=auth(viewer_id),
+    ).status_code == 404
+    assert client.patch(
+        f"/api/v1/posts/{owned_id}", json={}, headers=auth(viewer_id)
+    ).status_code == 422
+    assert client.patch(
+        f"/api/v1/posts/{owned_id}",
+        json={"boardCode": "question"},
+        headers=auth(viewer_id),
+    ).status_code == 422
+
+
+def test_delete_post_soft_deletes_only_for_owner_and_keeps_relations(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        other = User(nickname="other", region_id=1)
+        db.add(other)
+        db.flush()
+        owned = add_post(db, viewer_id, title="owned")
+        foreign = add_post(db, other.id, title="foreign")
+        db.add(PostLike(post_id=owned.id, user_id=viewer_id))
+        db.add(
+            Comment(
+                user_id=viewer_id,
+                target_type=CommentTargetType.POST,
+                target_id=owned.id,
+                content="kept",
+            )
+        )
+        db.commit()
+        owned_id, foreign_id = owned.id, foreign.id
+
+    assert client.delete(
+        f"/api/v1/posts/{foreign_id}", headers=auth(viewer_id)
+    ).status_code == 403
+    response = client.delete(
+        f"/api/v1/posts/{owned_id}", headers=auth(viewer_id)
+    )
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert client.get(
+        f"/api/v1/posts/{owned_id}", headers=auth(viewer_id)
+    ).status_code == 404
+    assert client.delete(
+        f"/api/v1/posts/{owned_id}", headers=auth(viewer_id)
+    ).status_code == 404
+    with Session(engine) as db:
+        assert db.get(Post, owned_id).deleted_at is not None
+        assert db.get(Post, foreign_id).deleted_at is None
+        assert db.scalar(
+            sa.select(sa.func.count())
+            .select_from(PostLike)
+            .where(PostLike.post_id == owned_id)
+        ) == 1
+        assert db.scalar(
+            sa.select(sa.func.count())
+            .select_from(Comment)
+            .where(
+                Comment.target_type == CommentTargetType.POST,
+                Comment.target_id == owned_id,
+            )
+        ) == 1

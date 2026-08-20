@@ -90,22 +90,22 @@ def test_post_query_aggregates_once_and_masks_deleted_authors() -> None:
         session.add_all(
             [
                 Comment(
-                    author_id=viewer_id,
+                    user_id=viewer_id,
                     target_type=CommentTargetType.POST,
                     target_id=active_post.id,
-                    body="one",
+                    content="one",
                 ),
                 Comment(
-                    author_id=viewer_id,
+                    user_id=viewer_id,
                     target_type=CommentTargetType.POST,
                     target_id=active_post.id,
-                    body="two",
+                    content="two",
                 ),
                 Comment(
-                    author_id=viewer_id,
+                    user_id=viewer_id,
                     target_type=CommentTargetType.POST,
                     target_id=active_post.id,
-                    body="deleted",
+                    content="deleted",
                     deleted_at=datetime.now(UTC),
                 ),
             ]
