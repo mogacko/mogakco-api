@@ -2,13 +2,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models import Post, PostBoard, PostCategory, Region, User
+from app.models import Post, PostBoard, PostCategory, PostLike, Region, User
 from app.schemas import (
+    LikeResponse,
     PopularPostsResponse,
     PostCreateRequest,
     PostPageResponse,
@@ -41,6 +43,13 @@ def _editable_post(db: Session, post_id: int, user_id: int) -> Post:
     if post.author_id != user_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not the post author")
     return post
+
+
+def _like_response(db: Session, post_id: int, is_liked: bool) -> LikeResponse:
+    like_count = db.scalar(
+        select(func.count(PostLike.id)).where(PostLike.post_id == post_id)
+    )
+    return LikeResponse(likeCount=like_count or 0, isLiked=is_liked)
 
 
 def _page_response(
@@ -233,6 +242,49 @@ def get_post(
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Post not found")
     return post_response_from_row(row)
+
+
+@router.post("/posts/{postId}/likes", response_model=LikeResponse)
+def like_post(
+    postId: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> LikeResponse:
+    post = db.scalar(
+        select(Post).where(Post.id == postId, Post.deleted_at.is_(None))
+    )
+    if post is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Post not found")
+
+    db.execute(
+        insert(PostLike)
+        .values(post_id=postId, user_id=current_user.id)
+        .on_conflict_do_nothing(constraint="uq_post_likes_post_user")
+    )
+    db.commit()
+    return _like_response(db, postId, True)
+
+
+@router.delete("/posts/{postId}/likes", response_model=LikeResponse)
+def unlike_post(
+    postId: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> LikeResponse:
+    post = db.scalar(
+        select(Post).where(Post.id == postId, Post.deleted_at.is_(None))
+    )
+    if post is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Post not found")
+
+    db.execute(
+        delete(PostLike).where(
+            PostLike.post_id == postId,
+            PostLike.user_id == current_user.id,
+        )
+    )
+    db.commit()
+    return _like_response(db, postId, False)
 
 
 @router.patch("/posts/{postId}", response_model=PostResponse)

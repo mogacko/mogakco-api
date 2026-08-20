@@ -545,3 +545,125 @@ def test_delete_post_soft_deletes_only_for_owner_and_keeps_relations(
                 Comment.target_id == owned_id,
             )
         ) == 1
+
+
+def test_like_post_is_idempotent_and_updates_list_and_detail(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        other = User(nickname="other", region_id=1)
+        db.add(other)
+        db.flush()
+        post = add_post(db, viewer_id, title="liked")
+        db.add(PostLike(post_id=post.id, user_id=other.id))
+        db.commit()
+        post_id, other_id = post.id, other.id
+
+    first = client.post(
+        f"/api/v1/posts/{post_id}/likes",
+        json={"userId": other_id},
+        headers=auth(viewer_id),
+    )
+    second = client.post(
+        f"/api/v1/posts/{post_id}/likes", headers=auth(viewer_id)
+    )
+
+    assert first.status_code == 200
+    assert first.json() == {"likeCount": 2, "isLiked": True}
+    assert second.status_code == 200
+    assert second.json() == {"likeCount": 2, "isLiked": True}
+    with Session(engine) as db:
+        likes = db.execute(
+            sa.select(PostLike.user_id).where(PostLike.post_id == post_id)
+        ).scalars().all()
+    assert sorted(likes) == sorted([viewer_id, other_id])
+
+    listed = client.get(
+        "/api/v1/chapters/seoul/posts", headers=auth(viewer_id)
+    ).json()["items"][0]
+    detailed = client.get(
+        f"/api/v1/posts/{post_id}", headers=auth(viewer_id)
+    ).json()
+    assert (listed["likeCount"], listed["isLiked"]) == (2, True)
+    assert (detailed["likeCount"], detailed["isLiked"]) == (2, True)
+
+
+def test_unlike_post_is_idempotent_and_preserves_other_users_like(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        other = User(nickname="other", region_id=1)
+        db.add(other)
+        db.flush()
+        post = add_post(db, viewer_id, title="unliked")
+        db.add_all(
+            [
+                PostLike(post_id=post.id, user_id=viewer_id),
+                PostLike(post_id=post.id, user_id=other.id),
+            ]
+        )
+        db.commit()
+        post_id, other_id = post.id, other.id
+
+    first = client.delete(
+        f"/api/v1/posts/{post_id}/likes", headers=auth(viewer_id)
+    )
+    second = client.delete(
+        f"/api/v1/posts/{post_id}/likes", headers=auth(viewer_id)
+    )
+
+    assert first.status_code == 200
+    assert first.json() == {"likeCount": 1, "isLiked": False}
+    assert second.status_code == 200
+    assert second.json() == {"likeCount": 1, "isLiked": False}
+    with Session(engine) as db:
+        likes = db.execute(
+            sa.select(PostLike.user_id).where(PostLike.post_id == post_id)
+        ).scalars().all()
+    assert likes == [other_id]
+
+    listed = client.get(
+        "/api/v1/chapters/seoul/posts", headers=auth(viewer_id)
+    ).json()["items"][0]
+    detailed = client.get(
+        f"/api/v1/posts/{post_id}", headers=auth(viewer_id)
+    ).json()
+    assert (listed["likeCount"], listed["isLiked"]) == (1, False)
+    assert (detailed["likeCount"], detailed["isLiked"]) == (1, False)
+
+
+def test_like_mutations_reject_missing_deleted_posts_and_invalid_auth(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine) as db:
+        active = add_post(db, viewer_id, title="active")
+        deleted = add_post(
+            db, viewer_id, title="deleted", deleted_at=datetime.now(UTC)
+        )
+        db.add(PostLike(post_id=deleted.id, user_id=viewer_id))
+        db.commit()
+        active_id, deleted_id = active.id, deleted.id
+
+    for method in (client.post, client.delete):
+        assert method(
+            "/api/v1/posts/999999/likes", headers=auth(viewer_id)
+        ).status_code == 404
+        assert method(
+            f"/api/v1/posts/{deleted_id}/likes", headers=auth(viewer_id)
+        ).status_code == 404
+
+    assert client.post(f"/api/v1/posts/{active_id}/likes").status_code == 401
+    with Session(engine) as db:
+        assert db.scalar(
+            sa.select(sa.func.count())
+            .select_from(PostLike)
+            .where(PostLike.post_id == active_id)
+        ) == 0
+        assert db.scalar(
+            sa.select(sa.func.count())
+            .select_from(PostLike)
+            .where(PostLike.post_id == deleted_id)
+        ) == 1
