@@ -8,11 +8,70 @@ from alembic.config import Config
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.main import app
 from app.models import Comment, CommentTargetType, Post, PostBoard, PostLike, User
 from app.schemas import CommentCreateRequest, PostCreateRequest, PostUpdateRequest
 from app.services.community import post_response_from_row, select_posts_with_stats
 
 DATABASE_URL = os.environ["DATABASE_URL"]
+
+
+def test_openapi_community_contract() -> None:
+    schema = app.openapi()
+    paths = schema["paths"]
+    assert {
+        (method.upper(), path)
+        for path, operations in paths.items()
+        for method in operations
+    } >= {
+        ("GET", "/api/v1/chapters/{chapterCode}/posts"),
+        ("POST", "/api/v1/chapters/{chapterCode}/posts"),
+        ("GET", "/api/v1/chapters/{chapterCode}/posts/search"),
+        ("GET", "/api/v1/chapters/{chapterCode}/posts/popular"),
+        ("GET", "/api/v1/posts/{postId}"),
+        ("PATCH", "/api/v1/posts/{postId}"),
+        ("DELETE", "/api/v1/posts/{postId}"),
+        ("POST", "/api/v1/posts/{postId}/likes"),
+        ("DELETE", "/api/v1/posts/{postId}/likes"),
+        ("GET", "/api/v1/comments"),
+        ("POST", "/api/v1/comments"),
+        ("PATCH", "/api/v1/comments/{commentId}"),
+        ("DELETE", "/api/v1/comments/{commentId}"),
+    }
+
+    for path, method in (
+        ("/api/v1/posts/{postId}", "delete"),
+        ("/api/v1/comments/{commentId}", "delete"),
+    ):
+        operation = paths[path][method]
+        assert "requestBody" not in operation
+        assert "content" not in operation["responses"]["204"]
+    for method in ("post", "delete"):
+        assert "requestBody" not in paths["/api/v1/posts/{postId}/likes"][method]
+
+    schemas = schema["components"]["schemas"]
+    assert schemas["PostBoard"]["enum"] == ["notice", "question", "talk"]
+    assert schemas["PostCategory"]["enum"] == [
+        "free",
+        "retrospective",
+        "recruit",
+    ]
+    assert schemas["CommentTargetType"]["enum"] == [
+        "post",
+        "event",
+        "meetup",
+    ]
+    assert schemas["PostUpdateRequest"]["minProperties"] == 1
+    assert schemas["PostUpdateRequest"]["additionalProperties"] is False
+    assert set(schemas["PostUpdateRequest"]["properties"]) == {
+        "title",
+        "body",
+        "categoryCode",
+    }
+    assert schemas["CommentUpdateRequest"]["additionalProperties"] is False
+    assert set(schemas["CommentUpdateRequest"]["properties"]) == {"body"}
+    for response_schema in ("PostResponse", "CommentResponse"):
+        assert "authorAvatarUrl" in schemas[response_schema]["required"]
 
 
 def test_request_schemas_trim_and_enforce_contract() -> None:

@@ -34,6 +34,8 @@ class PostCreateRequest(_RequestModel):
 
 
 class PostUpdateRequest(_RequestModel):
+    model_config = ConfigDict(json_schema_extra={"minProperties": 1})
+
     title: PostTitle | None = None
     body: PostBody | None = None
     categoryCode: PostCategory | None = None
@@ -58,7 +60,7 @@ class PostResponse(BaseModel):
     body: str
     authorId: int | None
     authorNickname: str
-    authorAvatarUrl: str | None = None
+    authorAvatarUrl: str | None
     createdAt: datetime
     editedAt: datetime | None
     likeCount: int = Field(ge=0)
@@ -103,7 +105,7 @@ class CommentResponse(BaseModel):
     parentId: int | None
     authorId: int | None
     authorNickname: str
-    authorAvatarUrl: str | None = None
+    authorAvatarUrl: str | None
     body: str
     createdAt: datetime
     editedAt: datetime | None
