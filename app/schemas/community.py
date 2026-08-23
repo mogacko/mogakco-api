@@ -115,7 +115,12 @@ class CommentResponse(BaseModel):
 
 class CommentThread(BaseModel):
     comment: CommentResponse
-    masked: bool
+    masked: bool = Field(
+        description=(
+            "운영자에 의해 숨김 처리됐는지 여부. 운영자 숨김 기능은 아직 "
+            "구현되지 않아 현재 응답은 false입니다."
+        )
+    )
     replies: list[CommentResponse]
 
 

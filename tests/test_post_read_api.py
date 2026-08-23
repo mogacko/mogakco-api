@@ -974,7 +974,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
     assert [reply["isMine"] for reply in first["replies"]] == [False, True]
 
     tombstone = payload["items"][1]
-    assert tombstone["masked"] is True
+    assert tombstone["masked"] is False
     assert tombstone["comment"]["isDeleted"] is True
     assert tombstone["comment"]["body"] == ""
     assert [reply["body"] for reply in tombstone["replies"]] == [
@@ -1692,7 +1692,7 @@ def test_delete_root_and_replies_keeps_only_threads_with_active_comments(
     )
     thread = listed.json()["items"][0]
     assert listed.json()["count"] == 2
-    assert thread["masked"] is True
+    assert thread["masked"] is False
     assert thread["comment"]["isDeleted"] is True
     assert thread["comment"]["body"] == ""
     assert [reply["body"] for reply in thread["replies"]] == [

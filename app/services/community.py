@@ -207,7 +207,7 @@ def comment_threads_from_rows(
                 comment=_comment_response(
                     root, current_user_id, tombstone=root_deleted
                 ),
-                masked=root_deleted,
+                masked=False,
                 replies=[
                     _comment_response(reply, current_user_id)
                     for reply in visible_replies

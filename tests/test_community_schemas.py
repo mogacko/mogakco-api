@@ -66,6 +66,9 @@ def test_openapi_community_contract() -> None:
         "MOGACKO",
         "EVENT",
     ]
+    assert "운영자" in schemas["CommentThread"]["properties"]["masked"][
+        "description"
+    ]
     assert schemas["PostUpdateRequest"]["minProperties"] == 1
     assert schemas["PostUpdateRequest"]["additionalProperties"] is False
     assert set(schemas["PostUpdateRequest"]["properties"]) == {
