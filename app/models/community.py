@@ -85,25 +85,6 @@ class Post(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class PostLike(Base):
-    __tablename__ = "post_likes"
-    __table_args__ = (
-        UniqueConstraint("post_id", "user_id", name="uq_post_likes_post_user"),
-        Index("ix_post_likes_user_id", "user_id"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    post_id: Mapped[int] = mapped_column(
-        ForeignKey("posts.id", ondelete="CASCADE")
-    )
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE")
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, server_default=func.now()
-    )
-
-
 class Comment(Base):
     __tablename__ = "comments"
     __table_args__ = (

@@ -42,22 +42,12 @@ def test_community_migration_constraints_and_delete_rules() -> None:
             ),
             {"user_id": user_id},
         )
-        connection.execute(
-            sa.text("INSERT INTO post_likes (post_id, user_id) VALUES (:post_id, :user_id)"),
-            {"post_id": post_id, "user_id": user_id},
-        )
         comment_id = connection.scalar(
             sa.text(
                 "INSERT INTO comments (user_id, target_type, target_id, content) "
                 "VALUES (:user_id, 'post', :post_id, 'comment') RETURNING id"
             ),
             {"user_id": user_id, "post_id": post_id},
-        )
-
-    with pytest.raises(IntegrityError), engine.begin() as connection:
-        connection.execute(
-            sa.text("INSERT INTO post_likes (post_id, user_id) VALUES (:post_id, :user_id)"),
-            {"post_id": post_id, "user_id": user_id},
         )
 
     with pytest.raises(IntegrityError), engine.begin() as connection:
@@ -115,15 +105,12 @@ def test_community_migration_constraints_and_delete_rules() -> None:
             sa.text("SELECT user_id FROM comments WHERE id IN (:root, :reply)"),
             {"root": comment_id, "reply": reply_id},
         ).scalars().all()
-        like_count = connection.scalar(sa.text("SELECT count(*) FROM post_likes"))
 
     assert post_author is None
     assert comment_authors == [None, None]
-    assert like_count == 0
-    assert "deleted_at" not in {
-        column["name"] for column in sa.inspect(engine).get_columns("post_likes")
-    }
-    post_indexes = {index["name"] for index in sa.inspect(engine).get_indexes("posts")}
+    inspector = sa.inspect(engine)
+    assert not inspector.has_table("post_likes")
+    post_indexes = {index["name"] for index in inspector.get_indexes("posts")}
     assert "ix_posts_region_board_created" in post_indexes
     assert "ix_posts_region_board_category_created" in post_indexes
     assert not any("chapter" in name for name in post_indexes)
@@ -143,24 +130,6 @@ def test_community_migration_constraints_and_delete_rules() -> None:
         "deleted_at",
     }
 
-    with engine.begin() as connection:
-        second_user_id = connection.scalar(
-            sa.text(
-                "INSERT INTO users (nickname, region_id) VALUES ('second-user', 1) "
-                "RETURNING id"
-            )
-        )
-        connection.execute(
-            sa.text(
-                "INSERT INTO post_likes (post_id, user_id) VALUES (:post_id, :user_id)"
-            ),
-            {"post_id": post_id, "user_id": second_user_id},
-        )
-        connection.execute(
-            sa.text("DELETE FROM posts WHERE id = :post_id"), {"post_id": post_id}
-        )
-        assert connection.scalar(sa.text("SELECT count(*) FROM post_likes")) == 0
-
     command.downgrade(config, "0001_core")
     inspector = sa.inspect(engine)
     assert not inspector.has_table("posts")
@@ -168,4 +137,32 @@ def test_community_migration_constraints_and_delete_rules() -> None:
     assert not inspector.has_table("comments")
     assert inspector.has_table("users")
     command.upgrade(config, "head")
+    engine.dispose()
+
+
+def test_legacy_post_likes_downgrade_and_reupgrade() -> None:
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    engine = sa.create_engine(DATABASE_URL)
+    assert not sa.inspect(engine).has_table("post_likes")
+
+    command.downgrade(config, "0004_comment_spec")
+    inspector = sa.inspect(engine)
+    assert inspector.has_table("post_likes")
+    assert {column["name"] for column in inspector.get_columns("post_likes")} == {
+        "id",
+        "post_id",
+        "user_id",
+        "created_at",
+    }
+    assert "ix_post_likes_user_id" in {
+        index["name"] for index in inspector.get_indexes("post_likes")
+    }
+    assert {
+        tuple(constraint["column_names"])
+        for constraint in inspector.get_unique_constraints("post_likes")
+    } == {("post_id", "user_id")}
+
+    command.upgrade(config, "head")
+    assert not sa.inspect(engine).has_table("post_likes")
     engine.dispose()

@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.main import app
-from app.models import Comment, CommentTargetType, Post, PostBoard, PostLike, User
+from app.models import Comment, CommentTargetType, Post, PostBoard, User
 from app.schemas import CommentCreateRequest, PostCreateRequest, PostUpdateRequest
 from app.services.community import post_response_from_row, select_posts_with_stats
 
@@ -19,25 +19,30 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 def test_openapi_community_contract() -> None:
     schema = app.openapi()
     paths = schema["paths"]
+    summaries = {
+        ("GET", "/api/v1/chapters/{chapterCode}/posts"): "게시글 목록 조회",
+        ("POST", "/api/v1/chapters/{chapterCode}/posts"): "게시글 작성",
+        ("GET", "/api/v1/chapters/{chapterCode}/posts/search"): "게시글 검색",
+        ("GET", "/api/v1/chapters/{chapterCode}/posts/popular"): "인기 게시글 조회",
+        ("GET", "/api/v1/posts/{postId}"): "게시글 상세 조회",
+        ("PATCH", "/api/v1/posts/{postId}"): "게시글 수정",
+        ("DELETE", "/api/v1/posts/{postId}"): "게시글 삭제",
+        ("POST", "/api/v1/posts/{postId}/likes"): "게시글 좋아요",
+        ("DELETE", "/api/v1/posts/{postId}/likes"): "게시글 좋아요 취소",
+        ("GET", "/api/v1/comments"): "댓글 목록 조회",
+        ("POST", "/api/v1/comments"): "댓글 작성",
+        ("PATCH", "/api/v1/comments/{commentId}"): "댓글 수정",
+        ("DELETE", "/api/v1/comments/{commentId}"): "댓글 삭제",
+    }
     assert {
         (method.upper(), path)
         for path, operations in paths.items()
         for method in operations
-    } >= {
-        ("GET", "/api/v1/chapters/{chapterCode}/posts"),
-        ("POST", "/api/v1/chapters/{chapterCode}/posts"),
-        ("GET", "/api/v1/chapters/{chapterCode}/posts/search"),
-        ("GET", "/api/v1/chapters/{chapterCode}/posts/popular"),
-        ("GET", "/api/v1/posts/{postId}"),
-        ("PATCH", "/api/v1/posts/{postId}"),
-        ("DELETE", "/api/v1/posts/{postId}"),
-        ("POST", "/api/v1/posts/{postId}/likes"),
-        ("DELETE", "/api/v1/posts/{postId}/likes"),
-        ("GET", "/api/v1/comments"),
-        ("POST", "/api/v1/comments"),
-        ("PATCH", "/api/v1/comments/{commentId}"),
-        ("DELETE", "/api/v1/comments/{commentId}"),
-    }
+    } >= summaries.keys()
+    for (method, path), summary in summaries.items():
+        operation = paths[path][method.lower()]
+        assert operation["summary"] == summary
+        assert operation["tags"] == ["커뮤니티"]
 
     for path, method in (
         ("/api/v1/posts/{postId}", "delete"),
@@ -103,13 +108,12 @@ def test_request_schemas_trim_and_enforce_contract() -> None:
         CommentCreateRequest(targetType="post", targetId=1, body="   ")
 
 
-def test_post_query_ignores_legacy_rdb_likes_and_masks_deleted_authors() -> None:
+def test_post_query_masks_deleted_authors() -> None:
     command.upgrade(Config("alembic.ini"), "head")
     engine = sa.create_engine(DATABASE_URL)
 
     with Session(engine) as session:
         session.execute(sa.delete(Comment))
-        session.execute(sa.delete(PostLike))
         session.execute(sa.delete(Post))
         session.execute(sa.delete(User))
 
@@ -145,7 +149,6 @@ def test_post_query_ignores_legacy_rdb_likes_and_masks_deleted_authors() -> None
         )
         session.add_all([active_post, soft_post, hard_post])
         session.flush()
-        session.add(PostLike(post_id=active_post.id, user_id=viewer_id))
         session.add_all(
             [
                 Comment(

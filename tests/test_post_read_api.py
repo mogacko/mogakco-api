@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.main import app
-from app.models import Comment, CommentTargetType, Post, PostBoard, PostCategory, PostLike, User
+from app.models import Comment, CommentTargetType, Post, PostBoard, PostCategory, User
 from app.redis_client import get_redis_client
 from app.services.community import post_like_key
 
@@ -27,7 +27,6 @@ def api(monkeypatch: pytest.MonkeyPatch) -> Generator[tuple[TestClient, sa.Engin
     redis.flushdb()
     with Session(engine) as db:
         db.execute(sa.delete(Comment))
-        db.execute(sa.delete(PostLike))
         db.execute(sa.delete(Post))
         db.execute(sa.delete(User))
         viewer = User(nickname="viewer", region_id=1)
@@ -165,8 +164,7 @@ def test_post_detail_returns_counts_like_state_and_deleted_author_mask(
         deleted_author = User(
             nickname="gone", region_id=1, deleted_at=datetime.now(UTC)
         )
-        legacy_liker = User(nickname="legacy-liker", region_id=1)
-        db.add_all([deleted_author, legacy_liker])
+        db.add(deleted_author)
         db.flush()
         post = add_post(db, deleted_author.id, title="detail")
         hidden = add_post(
@@ -180,7 +178,6 @@ def test_post_detail_returns_counts_like_state_and_deleted_author_mask(
         )
         db.add(root)
         db.flush()
-        db.add(PostLike(post_id=post.id, user_id=legacy_liker.id))
         db.add_all(
             [
                 Comment(
@@ -509,7 +506,7 @@ def test_update_post_is_partial_owner_only_and_preserves_board_region(
     ).status_code == 422
 
 
-def test_delete_post_soft_deletes_only_for_owner_and_keeps_relations(
+def test_delete_post_soft_deletes_cleans_likes_and_keeps_comments(
     api: tuple[TestClient, sa.Engine, int],
 ) -> None:
     client, engine, viewer_id = api
@@ -519,7 +516,6 @@ def test_delete_post_soft_deletes_only_for_owner_and_keeps_relations(
         db.flush()
         owned = add_post(db, viewer_id, title="owned")
         foreign = add_post(db, other.id, title="foreign")
-        db.add(PostLike(post_id=owned.id, user_id=viewer_id))
         db.add(
             Comment(
                 user_id=viewer_id,
@@ -530,6 +526,9 @@ def test_delete_post_soft_deletes_only_for_owner_and_keeps_relations(
         )
         db.commit()
         owned_id, foreign_id = owned.id, foreign.id
+
+    redis = get_redis_client()
+    redis.sadd(post_like_key(owned_id), viewer_id)
 
     assert client.delete(
         f"/api/v1/posts/{foreign_id}", headers=auth(viewer_id)
@@ -551,17 +550,13 @@ def test_delete_post_soft_deletes_only_for_owner_and_keeps_relations(
         assert db.get(Post, foreign_id).deleted_at is None
         assert db.scalar(
             sa.select(sa.func.count())
-            .select_from(PostLike)
-            .where(PostLike.post_id == owned_id)
-        ) == 1
-        assert db.scalar(
-            sa.select(sa.func.count())
             .select_from(Comment)
             .where(
                 Comment.target_type == CommentTargetType.POST,
                 Comment.target_id == owned_id,
             )
         ) == 1
+    assert redis.exists(post_like_key(owned_id)) == 0
 
 
 def test_like_post_is_idempotent_and_updates_list_and_detail(
@@ -597,12 +592,6 @@ def test_like_post_is_idempotent_and_updates_list_and_detail(
     assert second.status_code == 200
     assert second.json() == {"likeCount": 2, "isLiked": True}
     assert redis.smembers(post_like_key(post_id)) == {str(viewer_id), str(other_id)}
-    with Session(engine) as db:
-        assert db.scalar(
-            sa.select(sa.func.count())
-            .select_from(PostLike)
-            .where(PostLike.post_id == post_id)
-        ) == 0
 
     listed = client.get(
         "/api/v1/chapters/seoul/posts", headers=auth(viewer_id)
@@ -734,7 +723,7 @@ def test_redis_failure_returns_service_unavailable(
     assert response.json() == {"detail": "Like service unavailable"}
 
 
-def test_redis_failure_rolls_back_post_writes_but_not_soft_delete(
+def test_redis_failure_rolls_back_post_writes_but_not_delete_cleanup(
     api: tuple[TestClient, sa.Engine, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, engine, viewer_id = api
@@ -746,7 +735,8 @@ def test_redis_failure_rolls_back_post_writes_but_not_soft_delete(
     def failed_pipeline(*, transaction: bool = True):
         raise RedisConnectionError("unavailable")
 
-    monkeypatch.setattr(get_redis_client(), "pipeline", failed_pipeline)
+    redis = get_redis_client()
+    monkeypatch.setattr(redis, "pipeline", failed_pipeline)
 
     create_response = client.post(
         "/api/v1/chapters/seoul/posts",
@@ -769,11 +759,19 @@ def test_redis_failure_rolls_back_post_writes_but_not_soft_delete(
         assert unchanged.title == "original"
         assert unchanged.edited_at is None
 
+    like_key = post_like_key(post_id)
+    redis.sadd(like_key, viewer_id)
+
+    def failed_delete(*_keys: str) -> None:
+        raise RedisConnectionError("unavailable")
+
+    monkeypatch.setattr(redis, "delete", failed_delete)
     delete_response = client.delete(
         f"/api/v1/posts/{post_id}", headers=auth(viewer_id)
     )
 
     assert delete_response.status_code == 204
+    assert redis.exists(like_key) == 1
     with Session(engine) as db:
         assert db.get(Post, post_id).deleted_at is not None
 

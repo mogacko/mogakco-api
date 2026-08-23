@@ -4,7 +4,6 @@ from app.models.community import (
     Post,
     PostBoard,
     PostCategory,
-    PostLike,
 )
 from app.models.core import Region, User
 
@@ -14,7 +13,6 @@ __all__ = [
     "Post",
     "PostBoard",
     "PostCategory",
-    "PostLike",
     "Region",
     "User",
 ]

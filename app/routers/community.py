@@ -37,6 +37,7 @@ from app.services.community import (
     created_comment_response,
     get_region_by_chapter_code,
     get_post_like_stats,
+    post_like_key,
     post_response_from_row,
     select_comments_for_target,
     select_posts_with_stats,
@@ -44,7 +45,7 @@ from app.services.community import (
     validate_post_category,
 )
 
-router = APIRouter(prefix="/api/v1", tags=["community"])
+router = APIRouter(prefix="/api/v1", tags=["커뮤니티"])
 
 
 def _enabled_region(db: Session, chapter_code: str) -> Region:
@@ -112,7 +113,11 @@ def _page_response(
     )
 
 
-@router.get("/comments", response_model=CommentThreadResponse)
+@router.get(
+    "/comments",
+    response_model=CommentThreadResponse,
+    summary="댓글 목록 조회",
+)
 def list_comments(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
@@ -131,6 +136,7 @@ def list_comments(
     "/comments",
     response_model=CommentResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="댓글 작성",
 )
 def create_comment(
     request: CommentCreateRequest,
@@ -170,7 +176,11 @@ def create_comment(
     return response
 
 
-@router.patch("/comments/{commentId}", response_model=CommentResponse)
+@router.patch(
+    "/comments/{commentId}",
+    response_model=CommentResponse,
+    summary="댓글 수정",
+)
 def update_comment(
     commentId: int,
     request: CommentUpdateRequest,
@@ -198,7 +208,11 @@ def update_comment(
     return response
 
 
-@router.delete("/comments/{commentId}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/comments/{commentId}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="댓글 삭제",
+)
 def delete_comment(
     commentId: int,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -222,7 +236,11 @@ def delete_comment(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/chapters/{chapterCode}/posts", response_model=PostPageResponse)
+@router.get(
+    "/chapters/{chapterCode}/posts",
+    response_model=PostPageResponse,
+    summary="게시글 목록 조회",
+)
 def list_posts(
     chapterCode: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -289,6 +307,7 @@ def list_posts(
     "/chapters/{chapterCode}/posts",
     response_model=PostResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="게시글 작성",
 )
 def create_post(
     chapterCode: str,
@@ -321,7 +340,11 @@ def create_post(
     return response
 
 
-@router.get("/chapters/{chapterCode}/posts/search", response_model=PostPageResponse)
+@router.get(
+    "/chapters/{chapterCode}/posts/search",
+    response_model=PostPageResponse,
+    summary="게시글 검색",
+)
 def search_posts(
     chapterCode: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -366,7 +389,11 @@ def search_posts(
     )
 
 
-@router.get("/chapters/{chapterCode}/posts/popular", response_model=PopularPostsResponse)
+@router.get(
+    "/chapters/{chapterCode}/posts/popular",
+    response_model=PopularPostsResponse,
+    summary="인기 게시글 조회",
+)
 def popular_posts(
     chapterCode: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -408,7 +435,11 @@ def popular_posts(
     )
 
 
-@router.get("/posts/{postId}", response_model=PostResponse)
+@router.get(
+    "/posts/{postId}",
+    response_model=PostResponse,
+    summary="게시글 상세 조회",
+)
 def get_post(
     postId: int,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -423,7 +454,11 @@ def get_post(
     return _post_responses([row], redis, current_user.id)[0]
 
 
-@router.post("/posts/{postId}/likes", response_model=LikeResponse)
+@router.post(
+    "/posts/{postId}/likes",
+    response_model=LikeResponse,
+    summary="게시글 좋아요",
+)
 def like_post(
     postId: int,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -447,7 +482,11 @@ def like_post(
     return LikeResponse(likeCount=like_count, isLiked=is_liked)
 
 
-@router.delete("/posts/{postId}/likes", response_model=LikeResponse)
+@router.delete(
+    "/posts/{postId}/likes",
+    response_model=LikeResponse,
+    summary="게시글 좋아요 취소",
+)
 def unlike_post(
     postId: int,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -471,7 +510,11 @@ def unlike_post(
     return LikeResponse(likeCount=like_count, isLiked=is_liked)
 
 
-@router.patch("/posts/{postId}", response_model=PostResponse)
+@router.patch(
+    "/posts/{postId}",
+    response_model=PostResponse,
+    summary="게시글 수정",
+)
 def update_post(
     postId: int,
     request: PostUpdateRequest,
@@ -503,13 +546,22 @@ def update_post(
     return response
 
 
-@router.delete("/posts/{postId}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/posts/{postId}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="게시글 삭제",
+)
 def delete_post(
     postId: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
 ) -> Response:
     post = _editable_post(db, postId, current_user.id)
     post.deleted_at = datetime.now(UTC)
     db.commit()
+    try:
+        redis.delete(post_like_key(postId))
+    except RedisError:
+        pass
     return Response(status_code=status.HTTP_204_NO_CONTENT)
