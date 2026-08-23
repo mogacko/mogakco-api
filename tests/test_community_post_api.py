@@ -1033,6 +1033,51 @@ def test_comment_create_root_and_reply_use_uuids_and_empty_201(
     assert listed["items"][0]["replies"][0]["parentUuid"] == str(root_uuid)
 
 
+def test_comment_reply_locks_parent_before_insert(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        community_post = add_community_post(db, viewer_id, title="lock parent")
+        db.flush()
+        root = Comment(
+            target_type=CommentTargetType.COMMUNITY_POST,
+            target_id=community_post.id,
+            user_id=viewer_id,
+            content="root",
+        )
+        db.add(root)
+        db.commit()
+
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        *_args: object,
+    ) -> None:
+        statements.append(statement)
+
+    sa.event.listen(engine, "before_cursor_execute", capture_statement)
+    try:
+        response = client.post(
+            "/api/v1/comments",
+            headers=auth(viewer_id),
+            json={
+                "targetType": "COMMUNITY_POST",
+                "targetUuid": str(community_post.uuid),
+                "parentUuid": str(root.uuid),
+                "body": "reply",
+            },
+        )
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", capture_statement)
+
+    assert response.status_code == 201
+    assert any("FOR UPDATE" in statement.upper() for statement in statements)
+
+
 def test_comment_create_rejects_bad_parent_target_auth_and_spoofing(
     api: tuple[TestClient, sa.Engine, int],
 ) -> None:

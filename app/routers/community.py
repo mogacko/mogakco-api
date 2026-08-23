@@ -206,7 +206,7 @@ def create_comment(
             select(Comment).where(
                 Comment.uuid == request.parentUuid,
                 Comment.deleted_at.is_(None),
-            )
+            ).with_for_update()
         )
         if parent is None:
             raise HTTPException(
