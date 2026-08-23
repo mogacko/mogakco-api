@@ -6,21 +6,27 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy.exc import IntegrityError
 
-from app.models import PostBoard, PostCategory
-from app.services.community import validate_post_category
+from app.models import CommunityPostBoard, CommunityPostCategory
+from app.services.community import validate_community_post_category
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 
-def test_post_category_rules() -> None:
-    validate_post_category(PostBoard.TALK, PostCategory.FREE)
-    validate_post_category(PostBoard.NOTICE, None)
-    validate_post_category(PostBoard.QUESTION, None)
+def test_community_post_category_rules() -> None:
+    validate_community_post_category(
+        CommunityPostBoard.TALK,
+        CommunityPostCategory.FREE,
+    )
+    validate_community_post_category(CommunityPostBoard.NOTICE, None)
+    validate_community_post_category(CommunityPostBoard.QUESTION, None)
 
     with pytest.raises(ValueError):
-        validate_post_category(PostBoard.TALK, None)
+        validate_community_post_category(CommunityPostBoard.TALK, None)
     with pytest.raises(ValueError):
-        validate_post_category(PostBoard.NOTICE, PostCategory.FREE)
+        validate_community_post_category(
+            CommunityPostBoard.NOTICE,
+            CommunityPostCategory.FREE,
+        )
 
 
 def test_initial_migration_community_constraints_and_delete_rules() -> None:
@@ -35,9 +41,9 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
                 "VALUES ('community-user', 1) RETURNING id"
             )
         )
-        post_id = connection.scalar(
+        community_post_id = connection.scalar(
             sa.text(
-                "INSERT INTO posts "
+                "INSERT INTO community_post "
                 "(author_id, region_id, board, category, title, body) "
                 "VALUES (:user_id, 1, 'talk', 'free', 'title', 'body') "
                 "RETURNING id"
@@ -48,37 +54,37 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
             sa.text(
                 "INSERT INTO comments "
                 "(user_id, target_type, target_id, content) "
-                "VALUES (:user_id, 'COMMUNITY_POST', :post_id, 'comment') "
+                "VALUES (:user_id, 'COMMUNITY_POST', :community_post_id, 'comment') "
                 "RETURNING id"
             ),
-            {"user_id": user_id, "post_id": post_id},
+            {"user_id": user_id, "community_post_id": community_post_id},
         )
 
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
             sa.text(
                 "INSERT INTO comments (target_type, target_id, content) "
-                "VALUES ('other', :post_id, 'comment')"
+                "VALUES ('other', :community_post_id, 'comment')"
             ),
-            {"post_id": post_id},
+            {"community_post_id": community_post_id},
         )
 
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
             sa.text(
-                "INSERT INTO posts (region_id, board, title, body) "
+                "INSERT INTO community_post (region_id, board, title, body) "
                 "VALUES (1, 'question', 'title', :body)"
             ),
-            {"body": "x" * 10001},
+            {"body": "x" * 3001},
         )
 
     with pytest.raises(sa.exc.DataError), engine.begin() as connection:
         connection.execute(
             sa.text(
                 "INSERT INTO comments (target_type, target_id, content) "
-                "VALUES ('COMMUNITY_POST', :post_id, :content)"
+                "VALUES ('COMMUNITY_POST', :community_post_id, :content)"
             ),
-            {"post_id": post_id, "content": "x" * 301},
+            {"community_post_id": community_post_id, "content": "x" * 301},
         )
 
     with engine.begin() as connection:
@@ -86,10 +92,13 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
             sa.text(
                 "INSERT INTO comments "
                 "(target_type, target_id, parent_comment_id, content) "
-                "VALUES ('COMMUNITY_POST', :post_id, :parent_id, 'reply') "
+                "VALUES ('COMMUNITY_POST', :community_post_id, :parent_id, 'reply') "
                 "RETURNING id"
             ),
-            {"post_id": post_id, "parent_id": comment_id},
+            {
+                "community_post_id": community_post_id,
+                "parent_id": comment_id,
+            },
         )
 
     with pytest.raises(IntegrityError), engine.begin() as connection:
@@ -102,23 +111,45 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
         connection.execute(
             sa.text("DELETE FROM users WHERE id = :user_id"), {"user_id": user_id}
         )
-        post_author = connection.scalar(
-            sa.text("SELECT author_id FROM posts WHERE id = :post_id"),
-            {"post_id": post_id},
+        community_post_author = connection.scalar(
+            sa.text(
+                "SELECT author_id FROM community_post "
+                "WHERE id = :community_post_id"
+            ),
+            {"community_post_id": community_post_id},
         )
         comment_authors = connection.execute(
             sa.text("SELECT user_id FROM comments WHERE id IN (:root, :reply)"),
             {"root": comment_id, "reply": reply_id},
         ).scalars().all()
 
-    assert post_author is None
+    assert community_post_author is None
     assert comment_authors == [None, None]
     inspector = sa.inspect(engine)
     assert not inspector.has_table("post_likes")
-    post_indexes = {index["name"] for index in inspector.get_indexes("posts")}
-    assert "ix_posts_region_board_created" in post_indexes
-    assert "ix_posts_region_board_category_created" in post_indexes
-    assert not any("chapter" in name for name in post_indexes)
+    community_post_indexes = {
+        index["name"]
+        for index in inspector.get_indexes("community_post")
+    }
+    assert "ix_community_post_region_board_created" in community_post_indexes
+    assert (
+        "ix_community_post_region_board_category_created"
+        in community_post_indexes
+    )
+    assert not any("chapter" in name for name in community_post_indexes)
+    assert {column["name"] for column in inspector.get_columns("community_post")} == {
+        "id",
+        "uuid",
+        "author_id",
+        "region_id",
+        "board",
+        "category",
+        "title",
+        "body",
+        "created_at",
+        "edited_at",
+        "deleted_at",
+    }
     assert {column["name"] for column in inspector.get_columns("comments")} == {
         "id",
         "uuid",
@@ -140,7 +171,7 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
 
     command.downgrade(config, "base")
     inspector = sa.inspect(engine)
-    assert not inspector.has_table("posts")
+    assert not inspector.has_table("community_post")
     assert not inspector.has_table("comments")
     command.upgrade(config, "head")
     engine.dispose()

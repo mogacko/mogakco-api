@@ -22,13 +22,13 @@ from app.database import Base
 from app.models.core import utc_now
 
 
-class PostBoard(StrEnum):
+class CommunityPostBoard(StrEnum):
     NOTICE = "notice"
     QUESTION = "question"
     TALK = "talk"
 
 
-class PostCategory(StrEnum):
+class CommunityPostCategory(StrEnum):
     FREE = "free"
     RETROSPECTIVE = "retrospective"
     RECRUIT = "recruit"
@@ -40,43 +40,57 @@ class CommentTargetType(StrEnum):
     EVENT = "EVENT"
 
 
-class Post(Base):
-    __tablename__ = "posts"
+class CommunityPost(Base):
+    __tablename__ = "community_post"
     __table_args__ = (
-        CheckConstraint("char_length(body) <= 10000", name="ck_posts_body_length"),
-        Index("ix_posts_region_board_created", "region_id", "board", "created_at"),
+        CheckConstraint(
+            "char_length(body) <= 3000",
+            name="ck_community_post_body_length",
+        ),
         Index(
-            "ix_posts_region_board_category_created",
+            "ix_community_post_region_board_created",
+            "region_id",
+            "board",
+            "created_at",
+        ),
+        Index(
+            "ix_community_post_region_board_category_created",
             "region_id",
             "board",
             "category",
             "created_at",
         ),
-        Index("ix_posts_author_id", "author_id"),
+        Index("ix_community_post_author_id", "author_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    uuid: Mapped[UUID] = mapped_column(
+        Uuid,
+        unique=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
     author_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
     region_id: Mapped[int] = mapped_column(ForeignKey("region.id"))
-    board: Mapped[PostBoard] = mapped_column(
+    board: Mapped[CommunityPostBoard] = mapped_column(
         Enum(
-            PostBoard,
+            CommunityPostBoard,
             native_enum=False,
             length=20,
             values_callable=lambda enum: [e.value for e in enum],
         )
     )
-    category: Mapped[PostCategory | None] = mapped_column(
+    category: Mapped[CommunityPostCategory | None] = mapped_column(
         Enum(
-            PostCategory,
+            CommunityPostCategory,
             native_enum=False,
             length=30,
             values_callable=lambda enum: [e.value for e in enum],
         )
     )
-    title: Mapped[str] = mapped_column(String(60))
+    title: Mapped[str] = mapped_column(String(25))
     body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, server_default=func.now()

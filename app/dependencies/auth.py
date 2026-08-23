@@ -24,16 +24,23 @@ def get_current_user(
     ] = None,
 ) -> User:
     if not debug_auth_enabled() or debug_user_id is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "로그인이 필요합니다.",
+        )
 
     try:
         user_id = int(debug_user_id)
     except ValueError:
         raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED, "Not authenticated"
+            status.HTTP_401_UNAUTHORIZED,
+            "로그인이 필요합니다.",
         ) from None
 
     user = db.get(User, user_id)
     if user is None or user.deleted_at is not None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "로그인이 필요합니다.",
+        )
     return user

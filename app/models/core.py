@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Uuid, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -22,6 +23,12 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    uuid: Mapped[UUID] = mapped_column(
+        Uuid,
+        unique=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
     nickname: Mapped[str] = mapped_column(String(30), unique=True)
     region_id: Mapped[int] = mapped_column(ForeignKey("region.id"))
     created_at: Mapped[datetime] = mapped_column(

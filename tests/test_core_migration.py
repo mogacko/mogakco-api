@@ -7,7 +7,7 @@ from alembic.config import Config
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.services.community import get_region_by_chapter_code
+from app.services.community import get_region_by_name
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -41,6 +41,7 @@ def test_initial_migration_creates_final_core_schema() -> None:
     inspector = sa.inspect(engine)
     assert not inspector.has_table("chapters")
     assert not inspector.has_table("post_likes")
+    assert not inspector.has_table("posts")
     assert {column["name"] for column in inspector.get_columns("region")} == {
         "id",
         "name",
@@ -48,6 +49,7 @@ def test_initial_migration_creates_final_core_schema() -> None:
     }
     assert {column["name"] for column in inspector.get_columns("users")} == {
         "id",
+        "uuid",
         "nickname",
         "region_id",
         "created_at",
@@ -56,11 +58,20 @@ def test_initial_migration_creates_final_core_schema() -> None:
     }
 
     with Session(engine) as session:
-        region = get_region_by_chapter_code(session, "busan")
+        region = get_region_by_name(session, "busan")
         assert region is not None
         assert region.name == "busan"
         assert region.is_enable is True
-        assert get_region_by_chapter_code(session, "서울") is None
+        assert get_region_by_name(session, "서울") is None
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO region (name, is_enable) "
+                "VALUES ('new-region', false)"
+            )
+        )
+        assert connection.scalar(sa.text("SELECT count(*) FROM region")) == 11
 
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
@@ -85,14 +96,14 @@ def test_initial_migration_creates_final_core_schema() -> None:
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
             sa.text(
-                "INSERT INTO posts (region_id, board, title, body) "
+                "INSERT INTO community_post (region_id, board, title, body) "
                 "VALUES (9999, 'question', 'invalid region', 'body')"
             )
         )
 
     command.downgrade(config, "base")
     inspector = sa.inspect(engine)
-    for table in ("region", "users", "posts", "comments"):
+    for table in ("region", "users", "community_post", "comments"):
         assert not inspector.has_table(table)
     command.upgrade(config, "head")
     engine.dispose()

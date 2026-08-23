@@ -4,12 +4,12 @@ from app.schemas.community import (
     CommentThread,
     CommentThreadResponse,
     CommentUpdateRequest,
+    CommunityPostCreateRequest,
+    CommunityPostDetailResponse,
+    CommunityPostListItem,
+    CommunityPostPageResponse,
+    CommunityPostUpdateRequest,
     LikeResponse,
-    PopularPostsResponse,
-    PostCreateRequest,
-    PostPageResponse,
-    PostResponse,
-    PostUpdateRequest,
 )
 
 __all__ = [
@@ -18,10 +18,10 @@ __all__ = [
     "CommentThread",
     "CommentThreadResponse",
     "CommentUpdateRequest",
+    "CommunityPostCreateRequest",
+    "CommunityPostDetailResponse",
+    "CommunityPostListItem",
+    "CommunityPostPageResponse",
+    "CommunityPostUpdateRequest",
     "LikeResponse",
-    "PopularPostsResponse",
-    "PostCreateRequest",
-    "PostPageResponse",
-    "PostResponse",
-    "PostUpdateRequest",
 ]

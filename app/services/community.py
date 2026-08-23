@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from redis import Redis
 from sqlalchemy import and_, func, or_, select
@@ -10,53 +11,40 @@ from sqlalchemy.sql import Select
 from app.models import (
     Comment,
     CommentTargetType,
-    Post,
-    PostBoard,
-    PostCategory,
+    CommunityPost,
+    CommunityPostBoard,
+    CommunityPostCategory,
     Region,
     User,
 )
 
 if TYPE_CHECKING:
-    from app.schemas import CommentResponse, CommentThreadResponse, PostResponse
+    from app.schemas import (
+        CommentResponse,
+        CommentThreadResponse,
+        CommunityPostListItem,
+    )
 
 
-def validate_post_category(
-    board: PostBoard, category: PostCategory | None
+def validate_community_post_category(
+    board: CommunityPostBoard,
+    category: CommunityPostCategory | None,
 ) -> None:
-    if board is PostBoard.TALK and category is None:
-        raise ValueError("talk posts require a category")
-    if board is not PostBoard.TALK and category is not None:
-        raise ValueError("only talk posts accept a category")
+    if board is CommunityPostBoard.TALK and category is None:
+        raise ValueError("talk community posts require a category")
+    if board is not CommunityPostBoard.TALK and category is not None:
+        raise ValueError("only talk community posts accept a category")
 
 
-def get_region_by_chapter_code(db: Session, chapter_code: str) -> Region | None:
-    return db.scalar(select(Region).where(Region.name == chapter_code))
+def get_region_by_name(db: Session, region_name: str) -> Region | None:
+    return db.scalar(select(Region).where(Region.name == region_name))
 
 
-def serialize_author(
-    author_id: int | None,
-    nickname: str | None,
-    deleted_at: datetime | None,
-) -> dict[str, int | str | None]:
-    if author_id is None or deleted_at is not None:
-        return {
-            "authorId": None,
-            "authorNickname": "탈퇴한 사용자",
-            "authorAvatarUrl": None,
-        }
-    return {
-        "authorId": author_id,
-        "authorNickname": nickname,
-        "authorAvatarUrl": None,
-    }
-
-
-def select_posts_with_stats() -> Select:
+def select_community_posts_with_stats() -> Select:
     parent_comment = aliased(Comment)
     comment_counts = (
         select(
-            Comment.target_id.label("post_id"),
+            Comment.target_id.label("community_post_id"),
             func.count(Comment.id).label("comment_count"),
         )
         .outerjoin(
@@ -80,46 +68,58 @@ def select_posts_with_stats() -> Select:
     )
     return (
         select(
-            Post.id,
-            Region.name.label("chapter_code"),
-            Post.board,
-            Post.category,
-            Post.title,
-            Post.body,
-            Post.author_id,
+            CommunityPost.id,
+            CommunityPost.uuid,
+            CommunityPost.category,
+            CommunityPost.title,
+            CommunityPost.body,
+            CommunityPost.author_id,
+            User.uuid.label("author_uuid"),
             User.nickname.label("author_nickname"),
             User.deleted_at.label("author_deleted_at"),
-            Post.created_at,
-            Post.edited_at,
-            func.coalesce(comment_counts.c.comment_count, 0).label("comment_count"),
+            CommunityPost.created_at,
+            CommunityPost.edited_at,
+            func.coalesce(comment_counts.c.comment_count, 0).label(
+                "comment_count"
+            ),
         )
-        .join(Region, Region.id == Post.region_id)
-        .outerjoin(User, User.id == Post.author_id)
-        .outerjoin(comment_counts, comment_counts.c.post_id == Post.id)
-        .where(Post.deleted_at.is_(None))
+        .outerjoin(User, User.id == CommunityPost.author_id)
+        .outerjoin(
+            comment_counts,
+            comment_counts.c.community_post_id == CommunityPost.id,
+        )
+        .where(CommunityPost.deleted_at.is_(None))
     )
 
 
-def comment_target_exists(
-    db: Session, target_type: CommentTargetType, target_id: int
-) -> bool:
+def resolve_comment_target_id(
+    db: Session,
+    target_type: CommentTargetType,
+    target_uuid: UUID,
+) -> int | None:
     if target_type is not CommentTargetType.COMMUNITY_POST:
-        return False
+        return None
     return db.scalar(
-        select(Post.id).where(Post.id == target_id, Post.deleted_at.is_(None))
-    ) is not None
+        select(CommunityPost.id).where(
+            CommunityPost.uuid == target_uuid,
+            CommunityPost.deleted_at.is_(None),
+        )
+    )
 
 
 def select_comments_for_target(
-    target_type: CommentTargetType, target_id: int
+    target_type: CommentTargetType,
+    target_id: int,
 ) -> Select:
+    parent_comment = aliased(Comment)
     return (
         select(
             Comment.id,
-            Comment.target_type,
-            Comment.target_id,
+            Comment.uuid,
             Comment.parent_comment_id,
+            parent_comment.uuid.label("parent_uuid"),
             Comment.user_id,
+            User.uuid.label("author_uuid"),
             User.nickname.label("author_nickname"),
             User.deleted_at.label("author_deleted_at"),
             Comment.content,
@@ -128,6 +128,7 @@ def select_comments_for_target(
             Comment.deleted_at,
         )
         .outerjoin(User, User.id == Comment.user_id)
+        .outerjoin(parent_comment, parent_comment.id == Comment.parent_comment_id)
         .where(
             Comment.target_type == target_type,
             Comment.target_id == target_id,
@@ -137,7 +138,10 @@ def select_comments_for_target(
 
 
 def _comment_response(
-    row: Mapping[str, Any], current_user_id: int, *, tombstone: bool = False
+    row: Mapping[str, Any],
+    current_user_id: int,
+    *,
+    tombstone: bool = False,
 ) -> "CommentResponse":
     from app.schemas import CommentResponse
 
@@ -145,50 +149,30 @@ def _comment_response(
         row["user_id"] is not None and row["author_deleted_at"] is None
     )
     return CommentResponse(
-        id=row["id"],
-        targetType=row["target_type"],
-        targetId=row["target_id"],
-        parentId=row["parent_comment_id"],
+        uuid=row["uuid"],
+        parentUuid=row["parent_uuid"],
+        authorUuid=row["author_uuid"] if author_active else None,
+        authorNickname=row["author_nickname"] if author_active else None,
+        authorAvatarUrl=None,
         body="" if tombstone else row["content"],
         createdAt=row["created_at"],
-        editedAt=row["updated_at"],
+        updatedAt=row["updated_at"],
         isDeleted=row["deleted_at"] is not None,
         isMine=author_active and row["user_id"] == current_user_id,
-        **serialize_author(
-            row["user_id"], row["author_nickname"], row["author_deleted_at"]
-        ),
-    )
-
-
-def created_comment_response(
-    comment: Comment, author: User
-) -> "CommentResponse":
-    return _comment_response(
-        {
-            "id": comment.id,
-            "target_type": comment.target_type,
-            "target_id": comment.target_id,
-            "parent_comment_id": comment.parent_comment_id,
-            "user_id": author.id,
-            "author_nickname": author.nickname,
-            "author_deleted_at": author.deleted_at,
-            "content": comment.content,
-            "created_at": comment.created_at,
-            "updated_at": comment.updated_at,
-            "deleted_at": comment.deleted_at,
-        },
-        author.id,
     )
 
 
 def comment_threads_from_rows(
-    rows: list[Mapping[str, Any]], current_user_id: int
+    rows: list[Mapping[str, Any]],
+    current_user_id: int,
 ) -> "CommentThreadResponse":
     from app.schemas import CommentThread, CommentThreadResponse
 
     roots = [row for row in rows if row["parent_comment_id"] is None]
     root_ids = {row["id"] for row in roots}
-    replies: dict[int, list[Mapping[str, Any]]] = {root_id: [] for root_id in root_ids}
+    replies: dict[int, list[Mapping[str, Any]]] = {
+        root_id: [] for root_id in root_ids
+    }
     for row in rows:
         parent_id = row["parent_comment_id"]
         if parent_id in root_ids and row["deleted_at"] is None:
@@ -205,7 +189,9 @@ def comment_threads_from_rows(
         items.append(
             CommentThread(
                 comment=_comment_response(
-                    root, current_user_id, tombstone=root_deleted
+                    root,
+                    current_user_id,
+                    tombstone=root_deleted,
                 ),
                 masked=False,
                 replies=[
@@ -217,33 +203,42 @@ def comment_threads_from_rows(
     return CommentThreadResponse(count=count, items=items)
 
 
-def post_like_key(post_id: int) -> str:
-    return f"post:like:{post_id}:users"
+def community_post_like_key(community_post_id: int) -> str:
+    return f"community_post:like:{community_post_id}:users"
 
 
-def get_post_like_stats(
-    redis: Redis, post_ids: list[int], current_user_id: int
+def get_community_post_like_stats(
+    redis: Redis,
+    community_post_ids: list[int],
+    current_user_id: int,
 ) -> dict[int, tuple[int, bool]]:
-    unique_ids = list(dict.fromkeys(post_ids))
+    unique_ids = list(dict.fromkeys(community_post_ids))
     if not unique_ids:
         return {}
 
     pipeline = redis.pipeline(transaction=False)
-    for post_id in unique_ids:
-        key = post_like_key(post_id)
+    for community_post_id in unique_ids:
+        key = community_post_like_key(community_post_id)
         pipeline.scard(key)
         pipeline.sismember(key, current_user_id)
     results = pipeline.execute()
     return {
-        post_id: (int(results[index]), bool(results[index + 1]))
-        for index, post_id in zip(range(0, len(results), 2), unique_ids)
+        community_post_id: (int(results[index]), bool(results[index + 1]))
+        for index, community_post_id in zip(
+            range(0, len(results), 2),
+            unique_ids,
+        )
     }
 
 
-def set_post_liked(
-    redis: Redis, post_id: int, user_id: int, *, liked: bool
+def set_community_post_liked(
+    redis: Redis,
+    community_post_id: int,
+    user_id: int,
+    *,
+    liked: bool,
 ) -> tuple[int, bool]:
-    key = post_like_key(post_id)
+    key = community_post_like_key(community_post_id)
     pipeline = redis.pipeline(transaction=True)
     if liked:
         pipeline.sadd(key, user_id)
@@ -254,24 +249,29 @@ def set_post_liked(
     return int(like_count), liked
 
 
-def post_response_from_row(
-    row: Mapping[str, Any], *, like_count: int = 0, is_liked: bool = False
-) -> "PostResponse":
-    from app.schemas import PostResponse
+def community_post_list_item_from_row(
+    row: Mapping[str, Any],
+    *,
+    like_count: int,
+    is_liked: bool,
+    is_popular: bool,
+) -> "CommunityPostListItem":
+    from app.schemas import CommunityPostListItem
 
-    return PostResponse(
-        id=row["id"],
-        chapterCode=row["chapter_code"],
-        boardCode=row["board"],
-        categoryCode=row["category"],
+    author_active = (
+        row["author_id"] is not None and row["author_deleted_at"] is None
+    )
+    return CommunityPostListItem(
+        uuid=row["uuid"],
+        categoryName=row["category"],
         title=row["title"],
-        body=row["body"],
+        body=row["body"][:60],
+        authorNickname=row["author_nickname"] if author_active else None,
+        authorAvatarUrl=None,
         createdAt=row["created_at"],
-        editedAt=row["edited_at"],
+        updatedAt=row["edited_at"],
         likeCount=like_count,
         commentCount=row["comment_count"],
         isLiked=is_liked,
-        **serialize_author(
-            row["author_id"], row["author_nickname"], row["author_deleted_at"]
-        ),
+        isPopular=is_popular,
     )
