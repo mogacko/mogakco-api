@@ -62,9 +62,9 @@ def test_openapi_community_contract() -> None:
         "recruit",
     ]
     assert schemas["CommentTargetType"]["enum"] == [
-        "post",
-        "event",
-        "meetup",
+        "COMMUNITY_POST",
+        "MOGACKO",
+        "EVENT",
     ]
     assert schemas["PostUpdateRequest"]["minProperties"] == 1
     assert schemas["PostUpdateRequest"]["additionalProperties"] is False
@@ -105,7 +105,9 @@ def test_request_schemas_trim_and_enforce_contract() -> None:
     with pytest.raises(ValidationError):
         PostUpdateRequest(title=None)
     with pytest.raises(ValidationError):
-        CommentCreateRequest(targetType="post", targetId=1, body="   ")
+        CommentCreateRequest(
+            targetType="COMMUNITY_POST", targetId=1, body="   "
+        )
 
 
 def test_post_query_masks_deleted_authors() -> None:
@@ -153,19 +155,19 @@ def test_post_query_masks_deleted_authors() -> None:
             [
                 Comment(
                     user_id=viewer_id,
-                    target_type=CommentTargetType.POST,
+                    target_type=CommentTargetType.COMMUNITY_POST,
                     target_id=active_post.id,
                     content="one",
                 ),
                 Comment(
                     user_id=viewer_id,
-                    target_type=CommentTargetType.POST,
+                    target_type=CommentTargetType.COMMUNITY_POST,
                     target_id=active_post.id,
                     content="two",
                 ),
                 Comment(
                     user_id=viewer_id,
-                    target_type=CommentTargetType.POST,
+                    target_type=CommentTargetType.COMMUNITY_POST,
                     target_id=active_post.id,
                     content="deleted",
                     deleted_at=datetime.now(UTC),

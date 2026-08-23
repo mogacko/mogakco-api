@@ -172,7 +172,7 @@ def test_post_detail_returns_counts_like_state_and_deleted_author_mask(
         )
         root = Comment(
             user_id=viewer_id,
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             content="root",
         )
@@ -182,14 +182,14 @@ def test_post_detail_returns_counts_like_state_and_deleted_author_mask(
             [
                 Comment(
                     user_id=viewer_id,
-                    target_type=CommentTargetType.POST,
+                    target_type=CommentTargetType.COMMUNITY_POST,
                     target_id=post.id,
                     parent_comment_id=root.id,
                     content="reply",
                 ),
                 Comment(
                     user_id=viewer_id,
-                    target_type=CommentTargetType.POST,
+                    target_type=CommentTargetType.COMMUNITY_POST,
                     target_id=post.id,
                     content="deleted",
                     deleted_at=datetime.now(UTC),
@@ -332,7 +332,7 @@ def test_popular_posts_apply_score_window_exclusions_and_top_three(
                 [
                     Comment(
                         user_id=viewer_id,
-                        target_type=CommentTargetType.POST,
+                        target_type=CommentTargetType.COMMUNITY_POST,
                         target_id=post.id,
                         content=f"comment-{index}",
                     )
@@ -519,7 +519,7 @@ def test_delete_post_soft_deletes_cleans_likes_and_keeps_comments(
         db.add(
             Comment(
                 user_id=viewer_id,
-                target_type=CommentTargetType.POST,
+                target_type=CommentTargetType.COMMUNITY_POST,
                 target_id=owned.id,
                 content="kept",
             )
@@ -552,7 +552,7 @@ def test_delete_post_soft_deletes_cleans_likes_and_keeps_comments(
             sa.select(sa.func.count())
             .select_from(Comment)
             .where(
-                Comment.target_type == CommentTargetType.POST,
+                Comment.target_type == CommentTargetType.COMMUNITY_POST,
                 Comment.target_id == owned_id,
             )
         ) == 1
@@ -794,7 +794,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
         db.flush()
 
         root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=other.id,
             content="root",
@@ -804,7 +804,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
         db.add(root)
         db.flush()
         other_reply = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             parent_comment_id=root.id,
             user_id=other.id,
@@ -814,7 +814,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
         db.add(other_reply)
         db.flush()
         mine_reply = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             parent_comment_id=root.id,
             user_id=viewer_id,
@@ -822,7 +822,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
             created_at=base + timedelta(minutes=2),
         )
         deleted_reply = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             parent_comment_id=root.id,
             user_id=viewer_id,
@@ -833,7 +833,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
         db.add_all([mine_reply, deleted_reply])
         db.flush()
         depth_two = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             parent_comment_id=other_reply.id,
             user_id=viewer_id,
@@ -841,7 +841,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
             created_at=base + timedelta(minutes=4),
         )
         deleted_root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=other.id,
             content="deleted root secret",
@@ -851,7 +851,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
         db.add_all([depth_two, deleted_root])
         db.flush()
         deleted_root_reply = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             parent_comment_id=deleted_root.id,
             user_id=viewer_id,
@@ -859,7 +859,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
             created_at=base + timedelta(minutes=7),
         )
         empty_deleted_root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=other.id,
             content="hidden thread",
@@ -867,21 +867,21 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
             deleted_at=base + timedelta(minutes=9),
         )
         withdrawn_root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=withdrawn.id,
             content="withdrawn author",
             created_at=base + timedelta(minutes=10),
         )
         removed_root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=removed.id,
             content="removed author",
             created_at=base + timedelta(minutes=11),
         )
         unrelated = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=other_post.id,
             user_id=viewer_id,
             content="unrelated",
@@ -932,7 +932,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
     sa.event.listen(engine, "before_cursor_execute", count_selects)
     try:
         response = client.get(
-            f"/api/v1/comments?targetType=post&targetId={ids['post']}",
+            f"/api/v1/comments?targetType=COMMUNITY_POST&targetId={ids['post']}",
             headers=auth(viewer_id),
         )
     finally:
@@ -953,7 +953,7 @@ def test_list_comment_threads_maps_dto_masks_deletions_and_avoids_n_plus_one(
     assert first["masked"] is False
     assert first["comment"] == {
         "id": ids["root"],
-        "targetType": "post",
+        "targetType": "COMMUNITY_POST",
         "targetId": ids["post"],
         "parentId": None,
         "authorId": ids["other"],
@@ -1015,7 +1015,7 @@ def test_list_comments_validates_target_query_auth_and_post_comment_count(
         )
         db.flush()
         root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=active.id,
             user_id=viewer_id,
             content="root",
@@ -1023,14 +1023,14 @@ def test_list_comments_validates_target_query_auth_and_post_comment_count(
         db.add(root)
         db.flush()
         reply = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=active.id,
             parent_comment_id=root.id,
             user_id=viewer_id,
             content="reply",
         )
         deleted_reply = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=active.id,
             parent_comment_id=root.id,
             user_id=viewer_id,
@@ -1041,29 +1041,29 @@ def test_list_comments_validates_target_query_auth_and_post_comment_count(
         db.commit()
         active_id, deleted_id = active.id, deleted.id
 
-    endpoint = f"/api/v1/comments?targetType=post&targetId={active_id}"
+    endpoint = f"/api/v1/comments?targetType=COMMUNITY_POST&targetId={active_id}"
     response = client.get(endpoint, headers=auth(viewer_id))
     assert response.status_code == 200
     assert response.json()["count"] == 2
     assert client.get(endpoint).status_code == 401
     assert client.get(
-        "/api/v1/comments?targetType=post&targetId=999999",
+        "/api/v1/comments?targetType=COMMUNITY_POST&targetId=999999",
         headers=auth(viewer_id),
     ).status_code == 404
     assert client.get(
-        f"/api/v1/comments?targetType=post&targetId={deleted_id}",
+        f"/api/v1/comments?targetType=COMMUNITY_POST&targetId={deleted_id}",
         headers=auth(viewer_id),
     ).status_code == 404
-    for target_type in ("event", "meetup"):
+    for target_type in ("EVENT", "MOGACKO"):
         assert client.get(
             f"/api/v1/comments?targetType={target_type}&targetId=1",
             headers=auth(viewer_id),
         ).status_code == 404
     for invalid_query in (
         f"targetId={active_id}",
-        "targetType=post",
+        "targetType=COMMUNITY_POST",
         f"targetType=invalid&targetId={active_id}",
-        "targetType=post&targetId=0",
+        "targetType=COMMUNITY_POST&targetId=0",
     ):
         assert client.get(
             f"/api/v1/comments?{invalid_query}", headers=auth(viewer_id)
@@ -1097,14 +1097,14 @@ def test_create_root_and_reply_returns_dto_and_updates_reads(
     monkeypatch.setattr(redis, "pipeline", failed_pipeline)
     root_response = client.post(
         "/api/v1/comments",
-        json={"targetType": "post", "targetId": post_id, "body": "  x  "},
+        json={"targetType": "COMMUNITY_POST", "targetId": post_id, "body": "  x  "},
         headers=auth(viewer_id),
     )
     assert root_response.status_code == 201
     root = root_response.json()
     assert root == {
         "id": root["id"],
-        "targetType": "post",
+        "targetType": "COMMUNITY_POST",
         "targetId": post_id,
         "parentId": None,
         "authorId": viewer_id,
@@ -1129,7 +1129,7 @@ def test_create_root_and_reply_returns_dto_and_updates_reads(
     reply_response = client.post(
         "/api/v1/comments",
         json={
-            "targetType": "post",
+            "targetType": "COMMUNITY_POST",
             "targetId": post_id,
             "parentId": root["id"],
             "body": reply_body,
@@ -1161,7 +1161,7 @@ def test_create_root_and_reply_returns_dto_and_updates_reads(
         assert rows[1].parent_comment_id == rows[0].id
 
     listed = client.get(
-        f"/api/v1/comments?targetType=post&targetId={post_id}",
+        f"/api/v1/comments?targetType=COMMUNITY_POST&targetId={post_id}",
         headers=auth(viewer_id),
     )
     assert listed.status_code == 200
@@ -1185,20 +1185,20 @@ def test_create_reply_rejects_missing_deleted_mismatched_and_reply_parent(
         second_post = add_post(db, viewer_id, title="second")
         db.flush()
         root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=first_post.id,
             user_id=viewer_id,
             content="root",
         )
         deleted_root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=first_post.id,
             user_id=viewer_id,
             content="deleted",
             deleted_at=now,
         )
         other_post_root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=second_post.id,
             user_id=viewer_id,
             content="other post",
@@ -1212,7 +1212,7 @@ def test_create_reply_rejects_missing_deleted_mismatched_and_reply_parent(
         db.add_all([root, deleted_root, other_post_root, other_type_root])
         db.flush()
         reply = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=first_post.id,
             parent_comment_id=root.id,
             user_id=viewer_id,
@@ -1240,7 +1240,7 @@ def test_create_reply_rejects_missing_deleted_mismatched_and_reply_parent(
         response = client.post(
             "/api/v1/comments",
             json={
-                "targetType": "post",
+                "targetType": "COMMUNITY_POST",
                 "targetId": ids["post"],
                 "parentId": parent_id,
                 "body": "must fail",
@@ -1266,7 +1266,7 @@ def test_create_comment_validates_target_body_auth_and_spoofed_author(
         db.commit()
         active_id, deleted_id = active.id, deleted.id
 
-    valid = {"targetType": "post", "targetId": active_id, "body": "body"}
+    valid = {"targetType": "COMMUNITY_POST", "targetId": active_id, "body": "body"}
     assert client.post("/api/v1/comments", json=valid).status_code == 401
     assert client.post(
         "/api/v1/comments",
@@ -1277,8 +1277,8 @@ def test_create_comment_validates_target_body_auth_and_spoofed_author(
     for payload, expected_status in (
         ({**valid, "targetId": 999999}, 404),
         ({**valid, "targetId": deleted_id}, 404),
-        ({**valid, "targetType": "event"}, 404),
-        ({**valid, "targetType": "meetup"}, 404),
+        ({**valid, "targetType": "EVENT"}, 404),
+        ({**valid, "targetType": "MOGACKO"}, 404),
         ({**valid, "body": "   "}, 422),
         ({**valid, "body": "x" * 301}, 422),
         ({**valid, "userId": viewer_id}, 422),
@@ -1310,7 +1310,7 @@ def test_update_root_and_reply_reuses_dto_and_preserves_thread_and_count(
         post = add_post(db, viewer_id, title="update comments")
         db.flush()
         root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=viewer_id,
             content="root before",
@@ -1320,7 +1320,7 @@ def test_update_root_and_reply_reuses_dto_and_preserves_thread_and_count(
         db.add(root)
         db.flush()
         reply = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             parent_comment_id=root.id,
             user_id=viewer_id,
@@ -1372,7 +1372,7 @@ def test_update_root_and_reply_reuses_dto_and_preserves_thread_and_count(
     assert reply_payload["body"] == reply_body
     assert reply_payload["parentId"] == ids["root"]
     for payload in (root_payload, reply_payload):
-        assert payload["targetType"] == "post"
+        assert payload["targetType"] == "COMMUNITY_POST"
         assert payload["targetId"] == ids["post"]
         assert payload["authorId"] == viewer_id
         assert payload["authorNickname"] == "viewer"
@@ -1407,7 +1407,7 @@ def test_update_root_and_reply_reuses_dto_and_preserves_thread_and_count(
         assert stored_reply.deleted_at is None
 
     listed = client.get(
-        f"/api/v1/comments?targetType=post&targetId={ids['post']}",
+        f"/api/v1/comments?targetType=COMMUNITY_POST&targetId={ids['post']}",
         headers=auth(viewer_id),
     )
     assert listed.status_code == 200
@@ -1439,20 +1439,20 @@ def test_update_comment_rejects_missing_deleted_other_and_deleted_author(
         post = add_post(db, viewer_id, title="protected comments")
         db.flush()
         other_comment = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=other.id,
             content="other original",
         )
         deleted_comment = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=viewer_id,
             content="deleted original",
             deleted_at=now,
         )
         removed_author_comment = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=removed.id,
             content="removed original",
@@ -1496,7 +1496,7 @@ def test_update_comment_validates_body_auth_and_extra_fields(
         post = add_post(db, viewer_id, title="validation")
         db.flush()
         comment = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=viewer_id,
             content="original",
@@ -1522,7 +1522,7 @@ def test_update_comment_validates_body_auth_and_extra_fields(
         {},
         {"body": "   "},
         {"body": "x" * 301},
-        {"body": "x", "targetType": "post"},
+        {"body": "x", "targetType": "COMMUNITY_POST"},
         {"body": "x", "targetId": 1},
         {"body": "x", "parentId": 1},
         {"body": "x", "authorId": viewer_id},
@@ -1551,7 +1551,7 @@ def test_delete_root_soft_deletes_preserves_data_and_updates_counts(
         post = add_post(db, viewer_id, title="delete root")
         db.flush()
         root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=viewer_id,
             content="root secret",
@@ -1600,7 +1600,7 @@ def test_delete_root_soft_deletes_preserves_data_and_updates_counts(
             assert getattr(stored, field) == value
 
     listed = client.get(
-        f"/api/v1/comments?targetType=post&targetId={post_id}",
+        f"/api/v1/comments?targetType=COMMUNITY_POST&targetId={post_id}",
         headers=auth(viewer_id),
     )
     assert listed.status_code == 200
@@ -1617,7 +1617,7 @@ def test_delete_root_soft_deletes_preserves_data_and_updates_counts(
     assert client.post(
         "/api/v1/comments",
         json={
-            "targetType": "post",
+            "targetType": "COMMUNITY_POST",
             "targetId": post_id,
             "parentId": root_id,
             "body": "new reply",
@@ -1645,7 +1645,7 @@ def test_delete_root_and_replies_keeps_only_threads_with_active_comments(
         post = add_post(db, viewer_id, title="delete thread")
         db.flush()
         root = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=viewer_id,
             content="deleted root secret",
@@ -1654,7 +1654,7 @@ def test_delete_root_and_replies_keeps_only_threads_with_active_comments(
         db.flush()
         replies = [
             Comment(
-                target_type=CommentTargetType.POST,
+                target_type=CommentTargetType.COMMUNITY_POST,
                 target_id=post.id,
                 parent_comment_id=root.id,
                 user_id=viewer_id,
@@ -1687,7 +1687,7 @@ def test_delete_root_and_replies_keeps_only_threads_with_active_comments(
         )
 
     listed = client.get(
-        f"/api/v1/comments?targetType=post&targetId={ids['post']}",
+        f"/api/v1/comments?targetType=COMMUNITY_POST&targetId={ids['post']}",
         headers=auth(viewer_id),
     )
     thread = listed.json()["items"][0]
@@ -1709,7 +1709,7 @@ def test_delete_root_and_replies_keeps_only_threads_with_active_comments(
         headers=auth(viewer_id),
     ).status_code == 204
     listed = client.get(
-        f"/api/v1/comments?targetType=post&targetId={ids['post']}",
+        f"/api/v1/comments?targetType=COMMUNITY_POST&targetId={ids['post']}",
         headers=auth(viewer_id),
     )
     assert listed.json()["count"] == 1
@@ -1725,7 +1725,7 @@ def test_delete_root_and_replies_keeps_only_threads_with_active_comments(
         headers=auth(viewer_id),
     ).status_code == 204
     listed = client.get(
-        f"/api/v1/comments?targetType=post&targetId={ids['post']}",
+        f"/api/v1/comments?targetType=COMMUNITY_POST&targetId={ids['post']}",
         headers=auth(viewer_id),
     )
     assert listed.json() == {"count": 0, "items": []}
@@ -1752,20 +1752,20 @@ def test_delete_comment_rejects_invalid_state_auth_and_ownership(
         post = add_post(db, viewer_id, title="delete validation")
         db.flush()
         other_comment = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=other.id,
             content="other original",
         )
         deleted_comment = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=viewer_id,
             content="already deleted",
             deleted_at=deleted_at,
         )
         removed_author_comment = Comment(
-            target_type=CommentTargetType.POST,
+            target_type=CommentTargetType.COMMUNITY_POST,
             target_id=post.id,
             user_id=removed.id,
             content="removed original",

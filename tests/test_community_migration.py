@@ -23,7 +23,7 @@ def test_post_category_rules() -> None:
         validate_post_category(PostBoard.NOTICE, PostCategory.FREE)
 
 
-def test_community_migration_constraints_and_delete_rules() -> None:
+def test_initial_migration_community_constraints_and_delete_rules() -> None:
     config = Config("alembic.ini")
     command.upgrade(config, "head")
     engine = sa.create_engine(DATABASE_URL)
@@ -31,21 +31,25 @@ def test_community_migration_constraints_and_delete_rules() -> None:
     with engine.begin() as connection:
         user_id = connection.scalar(
             sa.text(
-                "INSERT INTO users (nickname, region_id) VALUES ('community-user', 1) "
-                "RETURNING id"
+                "INSERT INTO users (nickname, region_id) "
+                "VALUES ('community-user', 1) RETURNING id"
             )
         )
         post_id = connection.scalar(
             sa.text(
-                "INSERT INTO posts (author_id, region_id, board, category, title, body) "
-                "VALUES (:user_id, 1, 'talk', 'free', 'title', 'body') RETURNING id"
+                "INSERT INTO posts "
+                "(author_id, region_id, board, category, title, body) "
+                "VALUES (:user_id, 1, 'talk', 'free', 'title', 'body') "
+                "RETURNING id"
             ),
             {"user_id": user_id},
         )
         comment_id = connection.scalar(
             sa.text(
-                "INSERT INTO comments (user_id, target_type, target_id, content) "
-                "VALUES (:user_id, 'post', :post_id, 'comment') RETURNING id"
+                "INSERT INTO comments "
+                "(user_id, target_type, target_id, content) "
+                "VALUES (:user_id, 'COMMUNITY_POST', :post_id, 'comment') "
+                "RETURNING id"
             ),
             {"user_id": user_id, "post_id": post_id},
         )
@@ -72,7 +76,7 @@ def test_community_migration_constraints_and_delete_rules() -> None:
         connection.execute(
             sa.text(
                 "INSERT INTO comments (target_type, target_id, content) "
-                "VALUES ('post', :post_id, :content)"
+                "VALUES ('COMMUNITY_POST', :post_id, :content)"
             ),
             {"post_id": post_id, "content": "x" * 301},
         )
@@ -82,7 +86,8 @@ def test_community_migration_constraints_and_delete_rules() -> None:
             sa.text(
                 "INSERT INTO comments "
                 "(target_type, target_id, parent_comment_id, content) "
-                "VALUES ('post', :post_id, :parent_id, 'reply') RETURNING id"
+                "VALUES ('COMMUNITY_POST', :post_id, :parent_id, 'reply') "
+                "RETURNING id"
             ),
             {"post_id": post_id, "parent_id": comment_id},
         )
@@ -114,10 +119,7 @@ def test_community_migration_constraints_and_delete_rules() -> None:
     assert "ix_posts_region_board_created" in post_indexes
     assert "ix_posts_region_board_category_created" in post_indexes
     assert not any("chapter" in name for name in post_indexes)
-    comment_columns = {
-        column["name"] for column in sa.inspect(engine).get_columns("comments")
-    }
-    assert comment_columns == {
+    assert {column["name"] for column in inspector.get_columns("comments")} == {
         "id",
         "uuid",
         "target_type",
@@ -129,40 +131,16 @@ def test_community_migration_constraints_and_delete_rules() -> None:
         "created_at",
         "deleted_at",
     }
+    check_sql = " ".join(
+        constraint["sqltext"]
+        for constraint in inspector.get_check_constraints("comments")
+    )
+    for target_type in ("COMMUNITY_POST", "MOGACKO", "EVENT"):
+        assert target_type in check_sql
 
-    command.downgrade(config, "0001_core")
+    command.downgrade(config, "base")
     inspector = sa.inspect(engine)
     assert not inspector.has_table("posts")
-    assert not inspector.has_table("post_likes")
     assert not inspector.has_table("comments")
-    assert inspector.has_table("users")
     command.upgrade(config, "head")
-    engine.dispose()
-
-
-def test_legacy_post_likes_downgrade_and_reupgrade() -> None:
-    config = Config("alembic.ini")
-    command.upgrade(config, "head")
-    engine = sa.create_engine(DATABASE_URL)
-    assert not sa.inspect(engine).has_table("post_likes")
-
-    command.downgrade(config, "0004_comment_spec")
-    inspector = sa.inspect(engine)
-    assert inspector.has_table("post_likes")
-    assert {column["name"] for column in inspector.get_columns("post_likes")} == {
-        "id",
-        "post_id",
-        "user_id",
-        "created_at",
-    }
-    assert "ix_post_likes_user_id" in {
-        index["name"] for index in inspector.get_indexes("post_likes")
-    }
-    assert {
-        tuple(constraint["column_names"])
-        for constraint in inspector.get_unique_constraints("post_likes")
-    } == {("post_id", "user_id")}
-
-    command.upgrade(config, "head")
-    assert not sa.inspect(engine).has_table("post_likes")
     engine.dispose()

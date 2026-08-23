@@ -35,9 +35,9 @@ class PostCategory(StrEnum):
 
 
 class CommentTargetType(StrEnum):
-    POST = "post"
-    EVENT = "event"
-    MEETUP = "meetup"
+    COMMUNITY_POST = "COMMUNITY_POST"
+    MOGACKO = "MOGACKO"
+    EVENT = "EVENT"
 
 
 class Post(Base):
@@ -89,7 +89,7 @@ class Comment(Base):
     __tablename__ = "comments"
     __table_args__ = (
         CheckConstraint(
-            "target_type IN ('post', 'event', 'meetup')",
+            "target_type IN ('COMMUNITY_POST', 'MOGACKO', 'EVENT')",
             name="ck_comments_target_type",
         ),
         Index(

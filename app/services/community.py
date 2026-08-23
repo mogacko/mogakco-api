@@ -64,7 +64,7 @@ def select_posts_with_stats() -> Select:
             parent_comment.id == Comment.parent_comment_id,
         )
         .where(
-            Comment.target_type == CommentTargetType.POST,
+            Comment.target_type == CommentTargetType.COMMUNITY_POST,
             Comment.deleted_at.is_(None),
             or_(
                 Comment.parent_comment_id.is_(None),
@@ -103,7 +103,7 @@ def select_posts_with_stats() -> Select:
 def comment_target_exists(
     db: Session, target_type: CommentTargetType, target_id: int
 ) -> bool:
-    if target_type is not CommentTargetType.POST:
+    if target_type is not CommentTargetType.COMMUNITY_POST:
         return False
     return db.scalar(
         select(Post.id).where(Post.id == target_id, Post.deleted_at.is_(None))
