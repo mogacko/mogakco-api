@@ -65,6 +65,33 @@ def test_openapi_community_contract() -> None:
         assert operation["summary"] == summary
         assert operation["tags"] == ["커뮤니티"]
 
+    header_parameters = [
+        parameter
+        for path_operations in paths.values()
+        for operation in path_operations.values()
+        for parameter in operation.get("parameters", [])
+        if parameter["in"] == "header"
+    ]
+    assert all(
+        parameter["name"] != "X-Debug-User-Id"
+        for parameter in header_parameters
+    )
+    assert header_parameters
+    assert all(
+        parameter["name"] == "X-Debug-User-Uuid"
+        for parameter in header_parameters
+    )
+    assert all(
+        any(
+            option.get("type") == "string"
+            for option in parameter["schema"].get(
+                "anyOf", [parameter["schema"]]
+            )
+        )
+        and "UUID" in parameter["description"]
+        for parameter in header_parameters
+    )
+
     assert not any("/posts" in path for path in paths)
     assert not any("postId" in path for path in paths)
     for path, method, status_code in (
@@ -84,6 +111,8 @@ def test_openapi_community_contract() -> None:
         assert "requestBody" not in paths[like_path][method]
 
     schemas = schema["components"]["schemas"]
+    assert set(schemas["ErrorResponse"]["properties"]) == {"code", "message"}
+    assert set(schemas["ErrorResponse"]["required"]) == {"code", "message"}
     assert schemas["CommunityPostBoard"]["enum"] == [
         "notice",
         "question",
@@ -121,6 +150,7 @@ def test_openapi_community_contract() -> None:
     assert set(schemas["CommentUpdateRequest"]["properties"]) == {"body"}
     assert "authorAvatarUrl" in schemas["CommentResponse"]["required"]
     assert "authorAvatarUrl" in schemas["CommunityPostListItem"]["required"]
+    assert "isPopular" in schemas["CommunityPostListItem"]["properties"]
     assert set(schemas["CommunityPostDetailResponse"]["properties"]) == {
         "uuid",
         "regionName",
@@ -135,6 +165,30 @@ def test_openapi_community_contract() -> None:
         "likeCount",
         "isLiked",
     }
+
+    for path, method, expected_statuses in (
+        (
+            "/api/v1/community-posts",
+            "get",
+            {"401", "404", "422", "500", "503"},
+        ),
+        (
+            "/api/v1/community-posts/{communityPostUuid}",
+            "patch",
+            {"401", "403", "404", "422", "500"},
+        ),
+        (
+            "/api/v1/comments/{commentUuid}",
+            "patch",
+            {"401", "403", "404", "422", "500"},
+        ),
+    ):
+        responses = paths[path][method]["responses"]
+        assert expected_statuses <= responses.keys()
+        for status_code in expected_statuses:
+            assert responses[status_code]["content"]["application/json"][
+                "schema"
+            ] == {"$ref": "#/components/schemas/ErrorResponse"}
 
 
 def test_request_schemas_preserve_raw_text_and_enforce_contract() -> None:

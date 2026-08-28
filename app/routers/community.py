@@ -1,7 +1,8 @@
+import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from redis import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import or_, select
@@ -9,6 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.exceptions import (
+    DomainValidationError,
+    ForbiddenError,
+    NotFoundError,
+    ServiceUnavailableError,
+)
 from app.models import (
     Comment,
     CommentTargetType,
@@ -27,6 +34,7 @@ from app.schemas import (
     CommunityPostDetailResponse,
     CommunityPostPageResponse,
     CommunityPostUpdateRequest,
+    ErrorResponse,
     LikeResponse,
 )
 from app.services.community import (
@@ -44,12 +52,17 @@ from app.services.community import (
 from app.time import kst_now
 
 router = APIRouter(prefix="/api/v1", tags=["커뮤니티"])
+logger = logging.getLogger(__name__)
+
+
+def _error_responses(*status_codes: int) -> dict[int, dict[str, object]]:
+    return {status_code: {"model": ErrorResponse} for status_code in status_codes}
 
 
 def _enabled_region(db: Session, region_name: str) -> Region:
     region = get_region_by_name(db, region_name)
     if region is None or not region.is_enabled:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Region not found")
+        raise NotFoundError("REGION_NOT_FOUND", "지역을 찾을 수 없습니다.")
     return region
 
 
@@ -64,9 +77,9 @@ def _active_community_post(
         )
     )
     if community_post is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            "Community post not found",
+        raise NotFoundError(
+            "COMMUNITY_POST_NOT_FOUND",
+            "게시글을 찾을 수 없습니다.",
         )
     return community_post
 
@@ -78,10 +91,7 @@ def _editable_community_post(
 ) -> CommunityPost:
     community_post = _active_community_post(db, community_post_uuid)
     if community_post.author_id != user_id:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "올바르지 않은 접근입니다.",
-        )
+        raise ForbiddenError()
     return community_post
 
 
@@ -97,10 +107,8 @@ def _like_stats(
             current_user_id,
         )
     except RedisError as error:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Like service unavailable",
-        ) from error
+        logger.warning("Redis like stats lookup failed", exc_info=True)
+        raise ServiceUnavailableError() from error
 
 
 def _region_like_context(
@@ -164,6 +172,7 @@ def _page_response(
 @router.get(
     "/comments",
     response_model=CommentThreadResponse,
+    responses=_error_responses(401, 404, 422, 500),
     summary="댓글 목록 조회",
 )
 def list_comments(
@@ -174,7 +183,10 @@ def list_comments(
 ) -> CommentThreadResponse:
     target_id = resolve_comment_target_id(db, targetType, targetUuid)
     if target_id is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Target not found")
+        raise NotFoundError(
+            "COMMENT_TARGET_NOT_FOUND",
+            "댓글 대상을 찾을 수 없습니다.",
+        )
     rows = db.execute(
         select_comments_for_target(targetType, target_id)
     ).mappings().all()
@@ -185,6 +197,7 @@ def list_comments(
     "/comments",
     status_code=status.HTTP_201_CREATED,
     response_class=Response,
+    responses=_error_responses(401, 404, 422, 500),
     summary="댓글 작성",
 )
 def create_comment(
@@ -198,7 +211,10 @@ def create_comment(
         request.targetUuid,
     )
     if target_id is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Target not found")
+        raise NotFoundError(
+            "COMMENT_TARGET_NOT_FOUND",
+            "댓글 대상을 찾을 수 없습니다.",
+        )
 
     parent_id = None
     if request.parentUuid is not None:
@@ -209,18 +225,18 @@ def create_comment(
             ).with_for_update()
         )
         if parent is None:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND,
-                "Parent comment not found",
+            raise NotFoundError(
+                "PARENT_COMMENT_NOT_FOUND",
+                "부모 댓글을 찾을 수 없습니다.",
             )
         if (
             parent.parent_comment_id is not None
             or parent.target_type is not request.targetType
             or parent.target_id != target_id
         ):
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                "올바르지 않은 대상입니다.",
+            raise DomainValidationError(
+                "INVALID_COMMENT_PARENT",
+                "부모 댓글이 올바르지 않습니다.",
             )
         parent_id = parent.id
 
@@ -241,6 +257,7 @@ def create_comment(
     "/comments/{commentUuid}",
     status_code=status.HTTP_201_CREATED,
     response_class=Response,
+    responses=_error_responses(401, 403, 404, 422, 500),
     summary="댓글 수정",
 )
 def update_comment(
@@ -256,12 +273,9 @@ def update_comment(
         )
     )
     if comment is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Comment not found")
+        raise NotFoundError("COMMENT_NOT_FOUND", "댓글을 찾을 수 없습니다.")
     if comment.user_id != current_user.id:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "올바르지 않은 접근입니다.",
-        )
+        raise ForbiddenError()
 
     comment.content = request.body
     comment.updated_at = kst_now()
@@ -272,6 +286,7 @@ def update_comment(
 @router.delete(
     "/comments/{commentUuid}",
     status_code=status.HTTP_204_NO_CONTENT,
+    responses=_error_responses(401, 403, 404, 422, 500),
     summary="댓글 삭제",
 )
 def delete_comment(
@@ -286,12 +301,9 @@ def delete_comment(
         )
     )
     if comment is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Comment not found")
+        raise NotFoundError("COMMENT_NOT_FOUND", "댓글을 찾을 수 없습니다.")
     if comment.user_id != current_user.id:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "올바르지 않은 접근입니다.",
-        )
+        raise ForbiddenError()
 
     comment.deleted_at = kst_now()
     db.commit()
@@ -301,6 +313,7 @@ def delete_comment(
 @router.get(
     "/community-posts",
     response_model=CommunityPostPageResponse,
+    responses=_error_responses(401, 404, 422, 500, 503),
     summary="게시글 목록 조회",
 )
 def list_community_posts(
@@ -317,9 +330,9 @@ def list_community_posts(
         categoryName is not None
         and boardName is not CommunityPostBoard.TALK
     ):
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "올바르지 않은 메뉴입니다.",
+        raise DomainValidationError(
+            "INVALID_COMMUNITY_MENU",
+            "게시판 또는 카테고리가 올바르지 않습니다.",
         )
 
     region = _enabled_region(db, regionName)
@@ -356,6 +369,7 @@ def list_community_posts(
 @router.get(
     "/community-posts/detail",
     response_model=CommunityPostDetailResponse,
+    responses=_error_responses(401, 404, 422, 500, 503),
     summary="게시글 상세 조회",
 )
 def get_community_post_detail(
@@ -387,9 +401,9 @@ def get_community_post_detail(
         )
     ).mappings().one_or_none()
     if row is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            "Community post not found",
+        raise NotFoundError(
+            "COMMUNITY_POST_NOT_FOUND",
+            "게시글을 찾을 수 없습니다.",
         )
 
     like_count, is_liked = _like_stats(
@@ -421,6 +435,7 @@ def get_community_post_detail(
     "/regions/{regionName}/community-posts",
     status_code=status.HTTP_201_CREATED,
     response_class=Response,
+    responses=_error_responses(401, 403, 404, 422, 500),
     summary="게시글 작성",
 )
 def create_community_post(
@@ -431,10 +446,7 @@ def create_community_post(
 ) -> Response:
     region = _enabled_region(db, regionName)
     if request.boardName is CommunityPostBoard.NOTICE:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "올바르지 않은 접근입니다.",
-        )
+        raise ForbiddenError()
 
     db.add(
         CommunityPost(
@@ -453,6 +465,7 @@ def create_community_post(
 @router.get(
     "/community-posts/search",
     response_model=CommunityPostPageResponse,
+    responses=_error_responses(401, 404, 422, 500, 503),
     summary="게시글 검색",
 )
 def search_community_posts(
@@ -465,9 +478,9 @@ def search_community_posts(
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> CommunityPostPageResponse:
     if not 1 <= len(q) <= 100:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "올바르지 않은 메뉴입니다.",
+        raise DomainValidationError(
+            "INVALID_SEARCH_QUERY",
+            "검색어는 1자 이상 100자 이내로 입력해주세요.",
         )
 
     region = _enabled_region(db, regionName)
@@ -504,6 +517,7 @@ def search_community_posts(
 @router.post(
     "/community-posts/{communityPostUuid}/likes",
     response_model=LikeResponse,
+    responses=_error_responses(401, 404, 422, 500, 503),
     summary="게시글 좋아요",
 )
 def like_community_post(
@@ -521,16 +535,15 @@ def like_community_post(
             liked=True,
         )
     except RedisError as error:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Like service unavailable",
-        ) from error
+        logger.warning("Redis like write failed", exc_info=True)
+        raise ServiceUnavailableError() from error
     return LikeResponse(likeCount=like_count, isLiked=is_liked)
 
 
 @router.delete(
     "/community-posts/{communityPostUuid}/likes",
     response_model=LikeResponse,
+    responses=_error_responses(401, 404, 422, 500, 503),
     summary="게시글 좋아요 취소",
 )
 def unlike_community_post(
@@ -548,10 +561,8 @@ def unlike_community_post(
             liked=False,
         )
     except RedisError as error:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Like service unavailable",
-        ) from error
+        logger.warning("Redis unlike write failed", exc_info=True)
+        raise ServiceUnavailableError() from error
     return LikeResponse(likeCount=like_count, isLiked=is_liked)
 
 
@@ -559,6 +570,7 @@ def unlike_community_post(
     "/community-posts/{communityPostUuid}",
     status_code=status.HTTP_201_CREATED,
     response_class=Response,
+    responses=_error_responses(401, 403, 404, 422, 500),
     summary="게시글 수정",
 )
 def update_community_post(
@@ -579,9 +591,9 @@ def update_community_post(
                 request.categoryName,
             )
         except ValueError as error:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                "올바르지 않은 메뉴입니다.",
+            raise DomainValidationError(
+                "INVALID_COMMUNITY_MENU",
+                "게시판 또는 카테고리가 올바르지 않습니다.",
             ) from error
         community_post.category = request.categoryName
     if "title" in request.model_fields_set:
@@ -596,6 +608,7 @@ def update_community_post(
 @router.delete(
     "/community-posts/{communityPostUuid}",
     status_code=status.HTTP_204_NO_CONTENT,
+    responses=_error_responses(401, 403, 404, 422, 500),
     summary="게시글 삭제",
 )
 def delete_community_post(
@@ -614,5 +627,5 @@ def delete_community_post(
     try:
         redis.delete(community_post_like_key(community_post.id))
     except RedisError:
-        pass
+        logger.exception("Redis like cleanup failed after post deletion")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

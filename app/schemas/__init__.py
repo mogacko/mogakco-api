@@ -11,6 +11,7 @@ from app.schemas.community import (
     CommunityPostUpdateRequest,
     LikeResponse,
 )
+from app.schemas.error import ErrorResponse
 
 __all__ = [
     "CommentCreateRequest",
@@ -23,5 +24,6 @@ __all__ = [
     "CommunityPostListItem",
     "CommunityPostPageResponse",
     "CommunityPostUpdateRequest",
+    "ErrorResponse",
     "LikeResponse",
 ]

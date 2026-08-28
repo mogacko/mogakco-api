@@ -1,3 +1,4 @@
+import logging
 import os
 from collections.abc import Generator
 from datetime import datetime, timedelta
@@ -26,6 +27,7 @@ from app.services.community import community_post_like_key
 from app.time import KST, kst_now
 
 DATABASE_URL = os.environ["DATABASE_URL"]
+_DEBUG_USER_UUIDS: dict[int, UUID] = {}
 
 
 @pytest.fixture
@@ -44,6 +46,7 @@ def api(
         db.add(viewer)
         db.commit()
         viewer_id = viewer.id
+        _DEBUG_USER_UUIDS[viewer_id] = viewer.uuid
 
     def override_db() -> Generator[Session]:
         with Session(engine, expire_on_commit=False) as db:
@@ -55,6 +58,7 @@ def api(
     with TestClient(app) as client:
         yield client, engine, viewer_id
     app.dependency_overrides.clear()
+    _DEBUG_USER_UUIDS.clear()
     redis.flushdb()
     redis.close()
     get_redis_client.cache_clear()
@@ -88,8 +92,9 @@ def add_community_post(
     return community_post
 
 
-def auth(user_id: int) -> dict[str, str]:
-    return {"X-Debug-User-Id": str(user_id)}
+def auth(user: int | UUID) -> dict[str, str]:
+    user_uuid = user if isinstance(user, UUID) else _DEBUG_USER_UUIDS[user]
+    return {"X-Debug-User-Uuid": str(user_uuid)}
 
 
 def list_url(
@@ -223,9 +228,20 @@ def test_list_validates_required_query_and_enabled_region(
     response = client.get(url, headers=auth(viewer_id))
     assert response.status_code == status_code
     if status_code == 404:
-        assert response.json() == {}
+        assert response.json() == {
+            "code": "REGION_NOT_FOUND",
+            "message": "지역을 찾을 수 없습니다.",
+        }
+    elif "categoryName" in url:
+        assert response.json() == {
+            "code": "INVALID_COMMUNITY_MENU",
+            "message": "게시판 또는 카테고리가 올바르지 않습니다.",
+        }
     else:
-        assert response.json() == {"message": "올바르지 않은 메뉴입니다."}
+        assert response.json() == {
+            "code": "INVALID_REQUEST",
+            "message": "요청값이 올바르지 않습니다.",
+        }
 
 
 def test_detail_uses_query_uuid_and_returns_full_final_dto(
@@ -333,16 +349,22 @@ def test_detail_validates_target_auth_and_redis(
     endpoint = "/api/v1/community-posts/detail"
     assert client.get(endpoint).status_code == 401
     assert client.get(endpoint, headers=auth(viewer_id)).status_code == 422
-    assert client.get(
+    missing = client.get(
         endpoint,
         params={"communityPostUuid": str(uuid4())},
         headers=auth(viewer_id),
-    ).json() == {}
-    assert client.get(
+    )
+    deleted_response = client.get(
         endpoint,
         params={"communityPostUuid": str(deleted.uuid)},
         headers=auth(viewer_id),
-    ).json() == {}
+    )
+    for response in (missing, deleted_response):
+        assert response.status_code == 404
+        assert response.json() == {
+            "code": "COMMUNITY_POST_NOT_FOUND",
+            "message": "게시글을 찾을 수 없습니다.",
+        }
 
     redis = get_redis_client()
     monkeypatch.setattr(
@@ -358,7 +380,10 @@ def test_detail_validates_target_auth_and_redis(
         headers=auth(viewer_id),
     )
     assert failed.status_code == 503
-    assert failed.json() == {}
+    assert failed.json() == {
+        "code": "LIKE_SERVICE_UNAVAILABLE",
+        "message": "좋아요 서비스를 이용할 수 없습니다.",
+    }
 
 
 def test_search_matches_title_body_and_only_active_author(
@@ -410,6 +435,30 @@ def test_search_matches_title_body_and_only_active_author(
         str(author_match.uuid),
     }
     assert set(response.json()) == {"items", "offset", "limit", "hasMore"}
+
+
+@pytest.mark.parametrize(
+    ("query", "status_code"),
+    [("", 422), ("x", 200), ("x" * 100, 200), ("x" * 101, 422)],
+)
+def test_search_query_length_boundaries(
+    api: tuple[TestClient, sa.Engine, int],
+    query: str,
+    status_code: int,
+) -> None:
+    client, _, viewer_id = api
+    response = client.get(
+        "/api/v1/community-posts/search",
+        params={"regionName": "seoul", "q": query},
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == status_code
+    if status_code == 422:
+        assert response.json() == {
+            "code": "INVALID_SEARCH_QUERY",
+            "message": "검색어는 1자 이상 100자 이내로 입력해주세요.",
+        }
 
 
 def test_is_popular_uses_region_redis_like_top_three(
@@ -686,7 +735,7 @@ def test_update_rejects_auth_missing_deleted_other_and_extra_field(
     ).status_code == 404
     assert client.patch(
         f"/api/v1/community-posts/{active.uuid}",
-        headers=auth(other.id),
+        headers=auth(other.uuid),
         json={"boardName": "talk"},
     ).status_code == 422
     with Session(engine, expire_on_commit=False) as db:
@@ -727,6 +776,45 @@ def test_delete_soft_deletes_and_cleans_redis_key(
         f"/api/v1/community-posts/{community_post_uuid}",
         headers=auth(viewer_id),
     ).status_code == 404
+
+
+def test_delete_keeps_204_and_logs_redis_cleanup_failure(
+    api: tuple[TestClient, sa.Engine, int],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        community_post = add_community_post(
+            db,
+            viewer_id,
+            title="cleanup failure",
+        )
+        db.commit()
+        community_post_id = community_post.id
+        community_post_uuid = community_post.uuid
+
+    redis = get_redis_client()
+    monkeypatch.setattr(
+        redis,
+        "delete",
+        lambda *_args: (_ for _ in ()).throw(
+            RedisConnectionError("cleanup unavailable")
+        ),
+    )
+    logging.getLogger("app.routers.community").disabled = False
+    with caplog.at_level(logging.ERROR, logger="app.routers.community"):
+        response = client.delete(
+            f"/api/v1/community-posts/{community_post_uuid}",
+            headers=auth(viewer_id),
+        )
+
+    assert response.status_code == 204
+    with Session(engine) as db:
+        stored = db.get(CommunityPost, community_post_id)
+        assert stored is not None
+        assert stored.deleted_at is not None
+    assert "Redis like cleanup failed after post deletion" in caplog.text
 
 
 def test_like_is_idempotent_and_visible_in_list(
@@ -803,14 +891,17 @@ def test_like_rejects_missing_deleted_auth_and_redis_failure(
 
     endpoint = f"/api/v1/community-posts/{active.uuid}/likes"
     assert client.post(endpoint).status_code == 401
-    assert client.post(
+    missing = client.post(
         f"/api/v1/community-posts/{uuid4()}/likes",
         headers=auth(viewer_id),
-    ).json() == {}
-    assert client.post(
+    )
+    deleted_response = client.post(
         f"/api/v1/community-posts/{deleted.uuid}/likes",
         headers=auth(viewer_id),
-    ).json() == {}
+    )
+    for response in (missing, deleted_response):
+        assert response.status_code == 404
+        assert response.json()["code"] == "COMMUNITY_POST_NOT_FOUND"
 
     redis = get_redis_client()
     monkeypatch.setattr(
@@ -822,7 +913,10 @@ def test_like_rejects_missing_deleted_auth_and_redis_failure(
     )
     failed = client.post(endpoint, headers=auth(viewer_id))
     assert failed.status_code == 503
-    assert failed.json() == {}
+    assert failed.json() == {
+        "code": "LIKE_SERVICE_UNAVAILABLE",
+        "message": "좋아요 서비스를 이용할 수 없습니다.",
+    }
 
 
 def test_list_redis_failure_is_503_without_rdb_fallback(
@@ -844,7 +938,10 @@ def test_list_redis_failure_is_503_without_rdb_fallback(
     )
     response = client.get(list_url(), headers=auth(viewer_id))
     assert response.status_code == 503
-    assert response.json() == {}
+    assert response.json() == {
+        "code": "LIKE_SERVICE_UNAVAILABLE",
+        "message": "좋아요 서비스를 이용할 수 없습니다.",
+    }
     assert not sa.inspect(engine).has_table("post_likes")
 
 
@@ -984,7 +1081,15 @@ def test_comment_list_validates_target(
     )
     assert response.status_code == status_code
     assert response.json() == (
-        {} if status_code == 404 else {"message": "올바르지 않은 대상입니다."}
+        {
+            "code": "COMMENT_TARGET_NOT_FOUND",
+            "message": "댓글 대상을 찾을 수 없습니다.",
+        }
+        if status_code == 404
+        else {
+            "code": "INVALID_REQUEST",
+            "message": "요청값이 올바르지 않습니다.",
+        }
     )
 
 
@@ -1144,11 +1249,25 @@ def test_comment_create_rejects_bad_parent_target_auth_and_spoofing(
         "targetUuid": str(first.uuid),
         "body": "body",
     }
-    assert client.post("/api/v1/comments", json=valid).status_code == 401
+    unauthenticated = client.post("/api/v1/comments", json=valid)
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json()["code"] == "AUTH_REQUIRED"
     cases = (
-        ({**valid, "targetUuid": str(uuid4())}, 404),
-        ({**valid, "parentUuid": str(uuid4())}, 404),
-        ({**valid, "parentUuid": str(deleted_root.uuid)}, 404),
+        (
+            {**valid, "targetUuid": str(uuid4())},
+            404,
+            "COMMENT_TARGET_NOT_FOUND",
+        ),
+        (
+            {**valid, "parentUuid": str(uuid4())},
+            404,
+            "PARENT_COMMENT_NOT_FOUND",
+        ),
+        (
+            {**valid, "parentUuid": str(deleted_root.uuid)},
+            404,
+            "PARENT_COMMENT_NOT_FOUND",
+        ),
         (
             {
                 **valid,
@@ -1156,19 +1275,25 @@ def test_comment_create_rejects_bad_parent_target_auth_and_spoofing(
                 "parentUuid": str(root.uuid),
             },
             422,
+            "INVALID_COMMENT_PARENT",
         ),
-        ({**valid, "parentUuid": str(reply.uuid)}, 422),
-        ({**valid, "userUuid": str(uuid4())}, 422),
-        ({**valid, "authorUuid": str(uuid4())}, 422),
-        ({**valid, "body": "x" * 301}, 422),
+        (
+            {**valid, "parentUuid": str(reply.uuid)},
+            422,
+            "INVALID_COMMENT_PARENT",
+        ),
+        ({**valid, "userUuid": str(uuid4())}, 422, "INVALID_REQUEST"),
+        ({**valid, "authorUuid": str(uuid4())}, 422, "INVALID_REQUEST"),
+        ({**valid, "body": "x" * 301}, 422, "INVALID_REQUEST"),
     )
-    for payload, status_code in cases:
+    for payload, status_code, code in cases:
         response = client.post(
             "/api/v1/comments",
             json=payload,
             headers=auth(viewer_id),
         )
         assert response.status_code == status_code
+        assert response.json()["code"] == code
 
     with Session(engine, expire_on_commit=False) as db:
         assert db.scalar(
@@ -1364,16 +1489,29 @@ def test_comment_delete_rejects_auth_other_missing_and_already_deleted(
         db.commit()
 
     endpoint = f"/api/v1/comments/{other_comment.uuid}"
-    assert client.delete(endpoint).status_code == 401
-    assert client.delete(endpoint, headers=auth(viewer_id)).status_code == 403
-    assert client.delete(
+    unauthenticated = client.delete(endpoint)
+    forbidden = client.delete(endpoint, headers=auth(viewer_id))
+    deleted_response = client.delete(
         f"/api/v1/comments/{deleted.uuid}",
         headers=auth(viewer_id),
-    ).status_code == 404
-    assert client.delete(
+    )
+    missing = client.delete(
         f"/api/v1/comments/{uuid4()}",
         headers=auth(viewer_id),
-    ).status_code == 404
+    )
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json()["code"] == "AUTH_REQUIRED"
+    assert forbidden.status_code == 403
+    assert forbidden.json() == {
+        "code": "FORBIDDEN",
+        "message": "권한이 없습니다.",
+    }
+    for response in (deleted_response, missing):
+        assert response.status_code == 404
+        assert response.json() == {
+            "code": "COMMENT_NOT_FOUND",
+            "message": "댓글을 찾을 수 없습니다.",
+        }
     with Session(engine, expire_on_commit=False) as db:
         assert db.get(Comment, other_comment.id).deleted_at is None
 
@@ -1419,13 +1557,16 @@ def test_comment_writes_are_independent_of_redis(
     ).status_code == 204
 
 
-def test_error_envelope_keeps_status_and_hides_404_body(
+def test_error_envelope_returns_stable_code_and_message(
     api: tuple[TestClient, sa.Engine, int],
 ) -> None:
     client, _, viewer_id = api
     unauthenticated = client.get(list_url())
     assert unauthenticated.status_code == 401
-    assert unauthenticated.json() == {"message": "로그인이 필요합니다."}
+    assert unauthenticated.json() == {
+        "code": "AUTH_REQUIRED",
+        "message": "로그인이 필요합니다.",
+    }
 
     invalid = client.get(
         "/api/v1/community-posts"
@@ -1433,11 +1574,17 @@ def test_error_envelope_keeps_status_and_hides_404_body(
         headers=auth(viewer_id),
     )
     assert invalid.status_code == 422
-    assert invalid.json() == {"message": "올바르지 않은 메뉴입니다."}
+    assert invalid.json() == {
+        "code": "INVALID_REQUEST",
+        "message": "요청값이 올바르지 않습니다.",
+    }
 
     missing = client.delete(
         f"/api/v1/community-posts/{uuid4()}",
         headers=auth(viewer_id),
     )
     assert missing.status_code == 404
-    assert missing.json() == {}
+    assert missing.json() == {
+        "code": "COMMUNITY_POST_NOT_FOUND",
+        "message": "게시글을 찾을 수 없습니다.",
+    }
