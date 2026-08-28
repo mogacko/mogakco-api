@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -42,6 +41,7 @@ from app.services.community import (
     set_community_post_liked,
     validate_community_post_category,
 )
+from app.time import kst_now
 
 router = APIRouter(prefix="/api/v1", tags=["커뮤니티"])
 
@@ -264,7 +264,7 @@ def update_comment(
         )
 
     comment.content = request.body
-    comment.updated_at = datetime.now(UTC)
+    comment.updated_at = kst_now()
     db.commit()
     return Response(status_code=status.HTTP_201_CREATED)
 
@@ -293,7 +293,7 @@ def delete_comment(
             "올바르지 않은 접근입니다.",
         )
 
-    comment.deleted_at = datetime.now(UTC)
+    comment.deleted_at = kst_now()
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -588,7 +588,7 @@ def update_community_post(
         community_post.title = request.title
     if "body" in request.model_fields_set:
         community_post.body = request.body
-    community_post.updated_at = datetime.now(UTC)
+    community_post.updated_at = kst_now()
     db.commit()
     return Response(status_code=status.HTTP_201_CREATED)
 
@@ -609,7 +609,7 @@ def delete_community_post(
         communityPostUuid,
         current_user.id,
     )
-    community_post.deleted_at = datetime.now(UTC)
+    community_post.deleted_at = kst_now()
     db.commit()
     try:
         redis.delete(community_post_like_key(community_post.id))

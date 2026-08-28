@@ -6,6 +6,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy.exc import IntegrityError
 
+from app.database import create_db_engine
 from app.models import CommunityPostBoard, CommunityPostCategory
 from app.services.community import validate_community_post_category
 
@@ -32,7 +33,7 @@ def test_community_post_category_rules() -> None:
 def test_initial_migration_community_constraints_and_delete_rules() -> None:
     config = Config("alembic.ini")
     command.upgrade(config, "head")
-    engine = sa.create_engine(DATABASE_URL)
+    engine = create_db_engine(DATABASE_URL)
 
     with engine.begin() as connection:
         user_id = connection.scalar(

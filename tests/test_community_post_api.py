@@ -1,6 +1,6 @@
 import os
 from collections.abc import Generator
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import create_db_engine, get_db
 from app.main import app
 from app.models import (
     Comment,
@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.redis_client import get_redis_client
 from app.services.community import community_post_like_key
+from app.time import KST, kst_now
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -32,7 +33,7 @@ def api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[tuple[TestClient, sa.Engine, int]]:
     command.upgrade(Config("alembic.ini"), "head")
-    engine = sa.create_engine(DATABASE_URL)
+    engine = create_db_engine(DATABASE_URL)
     redis = get_redis_client()
     redis.flushdb()
     with Session(engine, expire_on_commit=False) as db:
@@ -79,7 +80,7 @@ def add_community_post(
         category=category,
         title=title,
         body=body,
-        created_at=created_at or datetime.now(UTC),
+        created_at=created_at or kst_now(),
         deleted_at=deleted_at,
     )
     db.add(community_post)
@@ -112,7 +113,7 @@ def test_list_filters_paginates_and_returns_final_dto(
     api: tuple[TestClient, sa.Engine, int],
 ) -> None:
     client, engine, viewer_id = api
-    now = datetime.now(UTC)
+    now = kst_now()
     with Session(engine, expire_on_commit=False) as db:
         older = add_community_post(
             db,
@@ -160,6 +161,7 @@ def test_list_filters_paginates_and_returns_final_dto(
     assert [item["title"] for item in payload["items"]] == ["newer"]
     assert set(payload) == {"items", "offset", "limit", "hasMore"}
     item = payload["items"][0]
+    assert datetime.fromisoformat(item["createdAt"]).utcoffset() == timedelta(hours=9)
     assert UUID(item["uuid"]) == newer.uuid
     assert set(item) == {
         "uuid",
@@ -264,19 +266,43 @@ def test_detail_uses_query_uuid_and_returns_full_final_dto(
         "authorUuid": str(author.uuid),
         "authorNickname": "detail-author",
         "authorAvatarUrl": None,
-        "createdAt": community_post.created_at.isoformat().replace(
-            "+00:00", "Z"
-        ),
+        "createdAt": community_post.created_at.isoformat(),
         "updatedAt": None,
         "likeCount": 1,
         "isLiked": True,
     }
+    serialized_created_at = datetime.fromisoformat(payload["createdAt"])
+    assert serialized_created_at == community_post.created_at
+    assert serialized_created_at.utcoffset() == timedelta(hours=9)
+
+    with Session(engine) as db:
+        db.execute(
+            sa.update(CommunityPost)
+            .where(CommunityPost.id == community_post.id)
+            .values(updated_at=kst_now())
+        )
+        db.commit()
+        stored_updated_at = db.scalar(
+            sa.select(CommunityPost.updated_at).where(
+                CommunityPost.id == community_post.id
+            )
+        )
+    updated_payload = client.get(
+        "/api/v1/community-posts/detail",
+        params={"communityPostUuid": str(community_post.uuid)},
+        headers=auth(viewer_id),
+    ).json()
+    assert stored_updated_at is not None
+    assert updated_payload["updatedAt"] is not None
+    serialized_updated_at = datetime.fromisoformat(updated_payload["updatedAt"])
+    assert serialized_updated_at == stored_updated_at
+    assert serialized_updated_at.utcoffset() == timedelta(hours=9)
 
     with Session(engine) as db:
         db.execute(
             sa.update(User)
             .where(User.id == author.id)
-            .values(deleted_at=datetime.now(UTC))
+            .values(deleted_at=kst_now())
         )
         db.commit()
     masked = client.get(
@@ -300,7 +326,7 @@ def test_detail_validates_target_auth_and_redis(
             db,
             viewer_id,
             title="deleted detail",
-            deleted_at=datetime.now(UTC),
+            deleted_at=kst_now(),
         )
         db.commit()
 
@@ -344,7 +370,7 @@ def test_search_matches_title_body_and_only_active_author(
         deleted_author = User(
             nickname="NeedleDeleted",
             region_id=1,
-            deleted_at=datetime.now(UTC),
+            deleted_at=kst_now(),
         )
         db.add_all([active_author, deleted_author])
         db.flush()
@@ -390,7 +416,7 @@ def test_is_popular_uses_region_redis_like_top_three(
     api: tuple[TestClient, sa.Engine, int],
 ) -> None:
     client, engine, viewer_id = api
-    now = datetime.now(UTC)
+    now = kst_now()
     with Session(engine, expire_on_commit=False) as db:
         community_posts = [
             add_community_post(
@@ -612,6 +638,7 @@ def test_update_changes_allowed_fields_and_preserves_identity(
         assert stored.body == "  changed  "
         assert stored.category is CommunityPostCategory.RETROSPECTIVE
         assert stored.updated_at is not None
+        assert stored.updated_at.utcoffset() == timedelta(hours=9)
         assert (
             stored.id,
             stored.region_id,
@@ -634,7 +661,7 @@ def test_update_rejects_auth_missing_deleted_other_and_extra_field(
             db,
             viewer_id,
             title="deleted",
-            deleted_at=datetime.now(UTC),
+            deleted_at=kst_now(),
         )
         db.commit()
 
@@ -693,6 +720,7 @@ def test_delete_soft_deletes_and_cleans_redis_key(
         stored = db.get(CommunityPost, community_post_id)
         assert stored is not None
         assert stored.deleted_at is not None
+        assert stored.deleted_at.utcoffset() == timedelta(hours=9)
         assert stored.body == "preserved"
     assert redis.exists(community_post_like_key(community_post_id)) == 0
     assert client.delete(
@@ -769,7 +797,7 @@ def test_like_rejects_missing_deleted_auth_and_redis_failure(
             db,
             viewer_id,
             title="deleted",
-            deleted_at=datetime.now(UTC),
+            deleted_at=kst_now(),
         )
         db.commit()
 
@@ -824,7 +852,7 @@ def test_comment_list_groups_replies_masks_authors_and_tombstones(
     api: tuple[TestClient, sa.Engine, int],
 ) -> None:
     client, engine, viewer_id = api
-    base = datetime(2026, 8, 15, tzinfo=UTC)
+    base = datetime(2026, 8, 15, tzinfo=KST)
     with Session(engine, expire_on_commit=False) as db:
         removed = User(nickname="removed", region_id=1)
         db.add(removed)
@@ -1097,7 +1125,7 @@ def test_comment_create_rejects_bad_parent_target_auth_and_spoofing(
             target_id=first.id,
             user_id=viewer_id,
             content="deleted",
-            deleted_at=datetime.now(UTC),
+            deleted_at=kst_now(),
         )
         db.add_all([root, deleted_root])
         db.flush()
@@ -1185,6 +1213,7 @@ def test_comment_update_uses_uuid_preserves_relations_and_raw_body(
         stored = db.get(Comment, root.id)
         assert stored.content == "  after  "
         assert stored.updated_at is not None
+        assert stored.updated_at.utcoffset() == timedelta(hours=9)
         assert (
             stored.id,
             stored.uuid,
@@ -1217,7 +1246,7 @@ def test_comment_update_rejects_missing_deleted_other_and_extra(
             target_id=community_post.id,
             user_id=viewer_id,
             content="deleted",
-            deleted_at=datetime.now(UTC),
+            deleted_at=kst_now(),
         )
         db.add_all([other_comment, deleted])
         db.commit()
@@ -1303,6 +1332,8 @@ def test_comment_delete_soft_deletes_and_thread_rules(
         assert stored_root.content == "root secret"
         assert stored_root.deleted_at is not None
         assert stored_reply.deleted_at is not None
+        assert stored_root.deleted_at.utcoffset() == timedelta(hours=9)
+        assert stored_reply.deleted_at.utcoffset() == timedelta(hours=9)
         assert stored_root.updated_at is None
 
 
@@ -1327,7 +1358,7 @@ def test_comment_delete_rejects_auth_other_missing_and_already_deleted(
             target_id=community_post.id,
             user_id=viewer_id,
             content="deleted",
-            deleted_at=datetime.now(UTC),
+            deleted_at=kst_now(),
         )
         db.add_all([other_comment, deleted])
         db.commit()

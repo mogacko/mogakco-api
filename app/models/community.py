@@ -19,7 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
-from app.models.core import utc_now
+from app.time import kst_now
 
 
 class CommunityPostBoard(StrEnum):
@@ -93,7 +93,7 @@ class CommunityPost(Base):
     title: Mapped[str] = mapped_column(String(25))
     body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, server_default=func.now()
+        DateTime(timezone=True), default=kst_now, server_default=func.now()
     )
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -140,7 +140,7 @@ class Comment(Base):
     )
     content: Mapped[str] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, server_default=func.now()
+        DateTime(timezone=True), default=kst_now, server_default=func.now()
     )
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

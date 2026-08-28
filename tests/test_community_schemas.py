@@ -1,5 +1,4 @@
 import os
-from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,6 +8,7 @@ from alembic.config import Config
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.database import create_db_engine
 from app.main import app
 from app.models import (
     Comment,
@@ -26,6 +26,7 @@ from app.services.community import (
     community_post_list_item_from_row,
     select_community_posts_with_stats,
 )
+from app.time import kst_now
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -201,7 +202,7 @@ def test_request_schemas_preserve_raw_text_and_enforce_contract() -> None:
 
 def test_community_post_query_masks_deleted_authors() -> None:
     command.upgrade(Config("alembic.ini"), "head")
-    engine = sa.create_engine(DATABASE_URL)
+    engine = create_db_engine(DATABASE_URL)
 
     with Session(engine) as session:
         session.execute(sa.delete(Comment))
@@ -212,7 +213,7 @@ def test_community_post_query_masks_deleted_authors() -> None:
         soft_deleted = User(
             nickname="soft-deleted",
             region_id=1,
-            deleted_at=datetime.now(UTC),
+            deleted_at=kst_now(),
         )
         hard_deleted = User(nickname="hard-deleted", region_id=1)
         session.add_all([viewer, soft_deleted, hard_deleted])
@@ -266,7 +267,7 @@ def test_community_post_query_masks_deleted_authors() -> None:
                     target_type=CommentTargetType.COMMUNITY_POST,
                     target_id=active_community_post.id,
                     content="deleted",
-                    deleted_at=datetime.now(UTC),
+                    deleted_at=kst_now(),
                 ),
             ]
         )

@@ -5,6 +5,8 @@ from functools import lru_cache
 from sqlalchemy import Engine, MetaData, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session
 
+from app.time import KST
+
 
 class Base(DeclarativeBase):
     metadata = MetaData(
@@ -19,7 +21,15 @@ class Base(DeclarativeBase):
 
 @lru_cache
 def get_engine() -> Engine:
-    return create_engine(os.environ["DATABASE_URL"], pool_pre_ping=True)
+    return create_db_engine(os.environ["DATABASE_URL"], pool_pre_ping=True)
+
+
+def create_db_engine(url: str, *, pool_pre_ping: bool = False) -> Engine:
+    return create_engine(
+        url,
+        pool_pre_ping=pool_pre_ping,
+        connect_args={"options": f"-c timezone={KST.key}"},
+    )
 
 
 def get_db() -> Generator[Session]:

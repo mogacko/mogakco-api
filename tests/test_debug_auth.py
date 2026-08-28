@@ -1,6 +1,5 @@
 import os
 from collections.abc import Generator
-from datetime import UTC, datetime
 
 import pytest
 import sqlalchemy as sa
@@ -10,9 +9,10 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import create_db_engine, get_db
 from app.dependencies.auth import get_current_user
 from app.models import User
+from app.time import kst_now
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -20,13 +20,13 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 @pytest.fixture
 def auth_app() -> Generator[tuple[TestClient, sa.Engine, int, int]]:
     command.upgrade(Config("alembic.ini"), "head")
-    engine = sa.create_engine(DATABASE_URL)
+    engine = create_db_engine(DATABASE_URL)
 
     with Session(engine) as session:
         session.execute(sa.delete(User))
         active = User(nickname="active-user", region_id=1)
         deleted = User(
-            nickname="deleted-user", region_id=1, deleted_at=datetime.now(UTC)
+            nickname="deleted-user", region_id=1, deleted_at=kst_now()
         )
         session.add_all([active, deleted])
         session.commit()

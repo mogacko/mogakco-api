@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 
 import pytest
 import sqlalchemy as sa
@@ -7,6 +8,8 @@ from alembic.config import Config
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.database import create_db_engine
+from app.models import User
 from app.services.community import get_region_by_name
 
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -27,7 +30,7 @@ REGIONS = [
 
 def test_initial_migration_creates_final_core_schema() -> None:
     config = Config("alembic.ini")
-    engine = sa.create_engine(DATABASE_URL)
+    engine = create_db_engine(DATABASE_URL)
     command.downgrade(config, "base")
     command.upgrade(config, "head")
     command.upgrade(config, "head")
@@ -83,10 +86,24 @@ def test_initial_migration_creates_final_core_schema() -> None:
             sa.text("INSERT INTO users (nickname, region_id) VALUES ('no-region', 9999)")
         )
 
+    with Session(engine) as session:
+        orm_user = User(nickname="orm-kst-user", region_id=1)
+        session.add(orm_user)
+        session.commit()
+        session.refresh(orm_user)
+        assert orm_user.created_at.tzinfo is not None
+        assert orm_user.created_at.utcoffset() == timedelta(hours=9)
+        assert orm_user.updated_at.utcoffset() == timedelta(hours=9)
+
     with engine.begin() as connection:
-        connection.execute(
-            sa.text("INSERT INTO users (nickname, region_id) VALUES ('unique-user', 1)")
+        server_created_at = connection.scalar(
+            sa.text(
+                "INSERT INTO users (nickname, region_id) "
+                "VALUES ('unique-user', 1) RETURNING created_at"
+            )
         )
+    assert server_created_at.tzinfo is not None
+    assert server_created_at.utcoffset() == timedelta(hours=9)
 
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(

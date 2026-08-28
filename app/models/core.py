@@ -1,14 +1,11 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Uuid, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
+from app.time import kst_now
 
 
 class Region(Base):
@@ -32,12 +29,12 @@ class User(Base):
     nickname: Mapped[str] = mapped_column(String(30), unique=True)
     region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, server_default=func.now()
+        DateTime(timezone=True), default=kst_now, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=utc_now,
-        onupdate=utc_now,
+        default=kst_now,
+        onupdate=kst_now,
         server_default=func.now(),
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
