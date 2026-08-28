@@ -9,6 +9,7 @@ import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from redis import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.orm import Session
 
@@ -23,7 +24,10 @@ from app.models import (
     User,
 )
 from app.redis_client import get_redis_client
-from app.services.community import community_post_like_key
+from app.services.community import (
+    community_post_like_key,
+    get_community_post_like_stats,
+)
 from app.time import KST, kst_now
 
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -180,7 +184,6 @@ def test_list_filters_paginates_and_returns_final_dto(
         "likeCount",
         "commentCount",
         "isLiked",
-        "isPopular",
     }
 
     second = client.get(
@@ -461,72 +464,52 @@ def test_search_query_length_boundaries(
         }
 
 
-def test_is_popular_uses_region_redis_like_top_three(
-    api: tuple[TestClient, sa.Engine, int],
-) -> None:
-    client, engine, viewer_id = api
-    now = kst_now()
-    with Session(engine, expire_on_commit=False) as db:
-        community_posts = [
-            add_community_post(
-                db,
-                viewer_id,
-                title=f"rank-{index}",
-                created_at=now + timedelta(seconds=index),
-            )
-            for index in range(4)
-        ]
-        db.commit()
-
-    redis = get_redis_client()
-    for community_post, like_count in zip(
-        community_posts,
-        [1, 2, 2, 4],
-    ):
-        if like_count:
-            redis.sadd(
-                community_post_like_key(community_post.id),
-                *range(100, 100 + like_count),
-            )
-
-    payload = client.get(
-        list_url(),
-        headers=auth(viewer_id),
-    ).json()
-    popularity = {
-        item["title"]: item["isPopular"] for item in payload["items"]
-    }
-    assert popularity == {
-        "rank-3": True,
-        "rank-2": True,
-        "rank-1": True,
-        "rank-0": False,
-    }
-
-
-def test_list_batches_redis_stats_once(
+def test_list_reads_redis_stats_once_for_response_page_only(
     api: tuple[TestClient, sa.Engine, int],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, engine, viewer_id = api
     with Session(engine, expire_on_commit=False) as db:
-        for index in range(4):
+        community_posts = [
             add_community_post(db, viewer_id, title=f"batch-{index}")
+            for index in range(4)
+        ]
         db.commit()
 
     redis = get_redis_client()
     original_pipeline = redis.pipeline
     calls = 0
+    requested_ids: list[int] = []
 
     def counted_pipeline(*args: object, **kwargs: object):
         nonlocal calls
         calls += 1
         return original_pipeline(*args, **kwargs)
 
+    def captured_stats(
+        redis_client: Redis,
+        community_post_ids: list[int],
+        current_user_id: int,
+    ) -> dict[int, tuple[int, bool]]:
+        requested_ids.extend(community_post_ids)
+        return get_community_post_like_stats(
+            redis_client,
+            community_post_ids,
+            current_user_id,
+        )
+
     monkeypatch.setattr(redis, "pipeline", counted_pipeline)
-    response = client.get(list_url(), headers=auth(viewer_id))
+    monkeypatch.setattr(
+        "app.routers.community.get_community_post_like_stats",
+        captured_stats,
+    )
+    response = client.get(list_url(limit=1), headers=auth(viewer_id))
     assert response.status_code == 200
     assert calls == 1
+    assert requested_ids == [community_posts[-1].id]
+    assert response.json()["items"][0]["uuid"] == str(
+        community_posts[-1].uuid
+    )
 
 
 def test_create_uses_current_user_preserves_raw_text_and_returns_empty_201(
@@ -674,7 +657,7 @@ def test_update_changes_allowed_fields_and_preserves_identity(
             "categoryName": "retrospective",
         },
     )
-    assert response.status_code == 201
+    assert response.status_code == 204
     assert response.content == b""
     with Session(engine, expire_on_commit=False) as db:
         stored = db.scalar(
@@ -1166,6 +1149,53 @@ def test_comment_create_root_and_reply_use_uuids_and_empty_201(
     assert listed["items"][0]["replies"][0]["parentUuid"] == str(root_uuid)
 
 
+@pytest.mark.parametrize(
+    ("board", "category"),
+    [
+        (CommunityPostBoard.NOTICE, None),
+        (CommunityPostBoard.TALK, CommunityPostCategory.FREE),
+    ],
+)
+def test_comments_support_notice_and_talk_community_posts(
+    api: tuple[TestClient, sa.Engine, int],
+    board: CommunityPostBoard,
+    category: CommunityPostCategory | None,
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        community_post = add_community_post(
+            db,
+            viewer_id,
+            title=f"{board.value} comments",
+            board=board,
+            category=category,
+        )
+        db.commit()
+
+    created = client.post(
+        "/api/v1/comments",
+        headers=auth(viewer_id),
+        json={
+            "targetType": "COMMUNITY_POST",
+            "targetUuid": str(community_post.uuid),
+            "body": "comment",
+        },
+    )
+    listed = client.get(
+        "/api/v1/comments",
+        params={
+            "targetType": "COMMUNITY_POST",
+            "targetUuid": str(community_post.uuid),
+        },
+        headers=auth(viewer_id),
+    )
+
+    assert created.status_code == 201
+    assert listed.status_code == 200
+    assert listed.json()["count"] == 1
+    assert listed.json()["items"][0]["comment"]["body"] == "comment"
+
+
 def test_comment_reply_locks_parent_before_insert(
     api: tuple[TestClient, sa.Engine, int],
 ) -> None:
@@ -1332,7 +1362,7 @@ def test_comment_update_uses_uuid_preserves_relations_and_raw_body(
         headers=auth(viewer_id),
         json={"body": "  after  "},
     )
-    assert response.status_code == 201
+    assert response.status_code == 204
     assert response.content == b""
     with Session(engine, expire_on_commit=False) as db:
         stored = db.get(Comment, root.id)
@@ -1550,7 +1580,7 @@ def test_comment_writes_are_independent_of_redis(
         f"/api/v1/comments/{comment_uuid}",
         headers=auth(viewer_id),
         json={"body": "updated"},
-    ).status_code == 201
+    ).status_code == 204
     assert client.delete(
         f"/api/v1/comments/{comment_uuid}",
         headers=auth(viewer_id),

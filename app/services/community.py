@@ -254,7 +254,6 @@ def community_post_list_item_from_row(
     *,
     like_count: int,
     is_liked: bool,
-    is_popular: bool,
 ) -> "CommunityPostListItem":
     from app.schemas import CommunityPostListItem
 
@@ -273,5 +272,4 @@ def community_post_list_item_from_row(
         likeCount=like_count,
         commentCount=row["comment_count"],
         isLiked=is_liked,
-        isPopular=is_popular,
     )

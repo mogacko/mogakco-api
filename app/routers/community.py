@@ -111,55 +111,26 @@ def _like_stats(
         raise ServiceUnavailableError() from error
 
 
-def _region_like_context(
-    db: Session,
-    redis: Redis,
-    region_id: int,
-    current_user_id: int,
-) -> tuple[dict[int, tuple[int, bool]], set[int]]:
-    # ponytail: active Region scan; add a ranked index only when volume demands it.
-    candidates = db.execute(
-        select(CommunityPost.id, CommunityPost.created_at).where(
-            CommunityPost.region_id == region_id,
-            CommunityPost.deleted_at.is_(None),
-        )
-    ).all()
-    stats = _like_stats(
-        redis,
-        [community_post_id for community_post_id, _ in candidates],
-        current_user_id,
-    )
-    popular_ids = {
-        community_post_id
-        for community_post_id, _ in sorted(
-            candidates,
-            key=lambda row: (
-                stats[row[0]][0],
-                row[1],
-                row[0],
-            ),
-            reverse=True,
-        )[:3]
-    }
-    return stats, popular_ids
-
-
 def _page_response(
     rows: list,
     *,
     offset: int,
     limit: int,
-    stats: dict[int, tuple[int, bool]],
-    popular_ids: set[int],
+    redis: Redis,
+    current_user_id: int,
 ) -> CommunityPostPageResponse:
     page_rows = rows[:limit]
+    stats = _like_stats(
+        redis,
+        [row["id"] for row in page_rows],
+        current_user_id,
+    )
     return CommunityPostPageResponse(
         items=[
             community_post_list_item_from_row(
                 row,
                 like_count=stats[row["id"]][0],
                 is_liked=stats[row["id"]][1],
-                is_popular=row["id"] in popular_ids,
             )
             for row in page_rows
         ],
@@ -255,7 +226,7 @@ def create_comment(
 
 @router.patch(
     "/comments/{commentUuid}",
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
     responses=_error_responses(401, 403, 404, 422, 500),
     summary="댓글 수정",
@@ -280,7 +251,7 @@ def update_comment(
     comment.content = request.body
     comment.updated_at = kst_now()
     db.commit()
-    return Response(status_code=status.HTTP_201_CREATED)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete(
@@ -351,18 +322,12 @@ def list_community_posts(
         .offset(offset)
         .limit(limit + 1)
     ).mappings().all()
-    stats, popular_ids = _region_like_context(
-        db,
-        redis,
-        region.id,
-        current_user.id,
-    )
     return _page_response(
         rows,
         offset=offset,
         limit=limit,
-        stats=stats,
-        popular_ids=popular_ids,
+        redis=redis,
+        current_user_id=current_user.id,
     )
 
 
@@ -499,18 +464,12 @@ def search_community_posts(
         .offset(offset)
         .limit(limit + 1)
     ).mappings().all()
-    stats, popular_ids = _region_like_context(
-        db,
-        redis,
-        region.id,
-        current_user.id,
-    )
     return _page_response(
         rows,
         offset=offset,
         limit=limit,
-        stats=stats,
-        popular_ids=popular_ids,
+        redis=redis,
+        current_user_id=current_user.id,
     )
 
 
@@ -568,7 +527,7 @@ def unlike_community_post(
 
 @router.patch(
     "/community-posts/{communityPostUuid}",
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
     responses=_error_responses(401, 403, 404, 422, 500),
     summary="게시글 수정",
@@ -602,7 +561,7 @@ def update_community_post(
         community_post.body = request.body
     community_post.updated_at = kst_now()
     db.commit()
-    return Response(status_code=status.HTTP_201_CREATED)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete(

@@ -98,9 +98,9 @@ def test_openapi_community_contract() -> None:
         ("/api/v1/community-posts/{communityPostUuid}", "delete", "204"),
         ("/api/v1/comments/{commentUuid}", "delete", "204"),
         ("/api/v1/regions/{regionName}/community-posts", "post", "201"),
-        ("/api/v1/community-posts/{communityPostUuid}", "patch", "201"),
+        ("/api/v1/community-posts/{communityPostUuid}", "patch", "204"),
         ("/api/v1/comments", "post", "201"),
-        ("/api/v1/comments/{commentUuid}", "patch", "201"),
+        ("/api/v1/comments/{commentUuid}", "patch", "204"),
     ):
         operation = paths[path][method]
         if method == "delete":
@@ -150,7 +150,19 @@ def test_openapi_community_contract() -> None:
     assert set(schemas["CommentUpdateRequest"]["properties"]) == {"body"}
     assert "authorAvatarUrl" in schemas["CommentResponse"]["required"]
     assert "authorAvatarUrl" in schemas["CommunityPostListItem"]["required"]
-    assert "isPopular" in schemas["CommunityPostListItem"]["properties"]
+    assert set(schemas["CommunityPostListItem"]["properties"]) == {
+        "uuid",
+        "categoryName",
+        "title",
+        "body",
+        "authorNickname",
+        "authorAvatarUrl",
+        "createdAt",
+        "updatedAt",
+        "likeCount",
+        "commentCount",
+        "isLiked",
+    }
     assert set(schemas["CommunityPostDetailResponse"]["properties"]) == {
         "uuid",
         "regionName",
@@ -349,7 +361,6 @@ def test_community_post_query_masks_deleted_authors() -> None:
                 row,
                 like_count=0,
                 is_liked=False,
-                is_popular=False,
             )
             for row in rows
         ]

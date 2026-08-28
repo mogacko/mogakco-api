@@ -66,7 +66,6 @@ class CommunityPostListItem(BaseModel):
     likeCount: int = Field(ge=0)
     commentCount: int = Field(ge=0)
     isLiked: bool
-    isPopular: bool
 
 
 class CommunityPostDetailResponse(BaseModel):
