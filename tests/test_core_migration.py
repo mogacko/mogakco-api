@@ -34,7 +34,7 @@ def test_initial_migration_creates_final_core_schema() -> None:
 
     with engine.connect() as connection:
         regions = connection.execute(
-            sa.text("SELECT name, is_enable FROM region ORDER BY id")
+            sa.text("SELECT name, is_enabled FROM regions ORDER BY id")
         ).all()
 
     assert regions == REGIONS
@@ -42,10 +42,10 @@ def test_initial_migration_creates_final_core_schema() -> None:
     assert not inspector.has_table("chapters")
     assert not inspector.has_table("post_likes")
     assert not inspector.has_table("posts")
-    assert {column["name"] for column in inspector.get_columns("region")} == {
+    assert {column["name"] for column in inspector.get_columns("regions")} == {
         "id",
         "name",
-        "is_enable",
+        "is_enabled",
     }
     assert {column["name"] for column in inspector.get_columns("users")} == {
         "id",
@@ -61,21 +61,21 @@ def test_initial_migration_creates_final_core_schema() -> None:
         region = get_region_by_name(session, "busan")
         assert region is not None
         assert region.name == "busan"
-        assert region.is_enable is True
+        assert region.is_enabled is True
         assert get_region_by_name(session, "서울") is None
 
     with engine.begin() as connection:
         connection.execute(
             sa.text(
-                "INSERT INTO region (name, is_enable) "
+                "INSERT INTO regions (name, is_enabled) "
                 "VALUES ('new-region', false)"
             )
         )
-        assert connection.scalar(sa.text("SELECT count(*) FROM region")) == 11
+        assert connection.scalar(sa.text("SELECT count(*) FROM regions")) == 11
 
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
-            sa.text("INSERT INTO region (name, is_enable) VALUES ('seoul', false)")
+            sa.text("INSERT INTO regions (name, is_enabled) VALUES ('seoul', false)")
         )
 
     with pytest.raises(IntegrityError), engine.begin() as connection:
@@ -96,14 +96,14 @@ def test_initial_migration_creates_final_core_schema() -> None:
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
             sa.text(
-                "INSERT INTO community_post (region_id, board, title, body) "
+                "INSERT INTO community_posts (region_id, board, title, body) "
                 "VALUES (9999, 'question', 'invalid region', 'body')"
             )
         )
 
     command.downgrade(config, "base")
     inspector = sa.inspect(engine)
-    for table in ("region", "users", "community_post", "comments"):
+    for table in ("regions", "users", "community_posts", "comments"):
         assert not inspector.has_table(table)
     command.upgrade(config, "head")
     engine.dispose()

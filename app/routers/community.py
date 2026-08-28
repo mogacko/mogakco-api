@@ -48,7 +48,7 @@ router = APIRouter(prefix="/api/v1", tags=["커뮤니티"])
 
 def _enabled_region(db: Session, region_name: str) -> Region:
     region = get_region_by_name(db, region_name)
-    if region is None or not region.is_enable:
+    if region is None or not region.is_enabled:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Region not found")
     return region
 
@@ -377,7 +377,7 @@ def get_community_post_detail(
             User.nickname.label("author_nickname"),
             User.deleted_at.label("author_deleted_at"),
             CommunityPost.created_at,
-            CommunityPost.edited_at,
+            CommunityPost.updated_at,
         )
         .join(Region, Region.id == CommunityPost.region_id)
         .outerjoin(User, User.id == CommunityPost.author_id)
@@ -411,7 +411,7 @@ def get_community_post_detail(
         authorNickname=row["author_nickname"] if author_active else None,
         authorAvatarUrl=None,
         createdAt=row["created_at"],
-        updatedAt=row["edited_at"],
+        updatedAt=row["updated_at"],
         likeCount=like_count,
         isLiked=is_liked,
     )
@@ -588,7 +588,7 @@ def update_community_post(
         community_post.title = request.title
     if "body" in request.model_fields_set:
         community_post.body = request.body
-    community_post.edited_at = datetime.now(UTC)
+    community_post.updated_at = datetime.now(UTC)
     db.commit()
     return Response(status_code=status.HTTP_201_CREATED)
 

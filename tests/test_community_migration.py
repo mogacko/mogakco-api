@@ -43,7 +43,7 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
         )
         community_post_id = connection.scalar(
             sa.text(
-                "INSERT INTO community_post "
+                "INSERT INTO community_posts "
                 "(author_id, region_id, board, category, title, body) "
                 "VALUES (:user_id, 1, 'talk', 'free', 'title', 'body') "
                 "RETURNING id"
@@ -72,7 +72,7 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
             sa.text(
-                "INSERT INTO community_post (region_id, board, title, body) "
+                "INSERT INTO community_posts (region_id, board, title, body) "
                 "VALUES (1, 'question', 'title', :body)"
             ),
             {"body": "x" * 3001},
@@ -113,7 +113,7 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
         )
         community_post_author = connection.scalar(
             sa.text(
-                "SELECT author_id FROM community_post "
+                "SELECT author_id FROM community_posts "
                 "WHERE id = :community_post_id"
             ),
             {"community_post_id": community_post_id},
@@ -129,15 +129,15 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
     assert not inspector.has_table("post_likes")
     community_post_indexes = {
         index["name"]
-        for index in inspector.get_indexes("community_post")
+        for index in inspector.get_indexes("community_posts")
     }
-    assert "ix_community_post_region_board_created" in community_post_indexes
+    assert "ix_community_posts_region_board_created" in community_post_indexes
     assert (
-        "ix_community_post_region_board_category_created"
+        "ix_community_posts_region_board_category_created"
         in community_post_indexes
     )
     assert not any("chapter" in name for name in community_post_indexes)
-    assert {column["name"] for column in inspector.get_columns("community_post")} == {
+    assert {column["name"] for column in inspector.get_columns("community_posts")} == {
         "id",
         "uuid",
         "author_id",
@@ -147,7 +147,7 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
         "title",
         "body",
         "created_at",
-        "edited_at",
+        "updated_at",
         "deleted_at",
     }
     assert {column["name"] for column in inspector.get_columns("comments")} == {
@@ -171,7 +171,7 @@ def test_initial_migration_community_constraints_and_delete_rules() -> None:
 
     command.downgrade(config, "base")
     inspector = sa.inspect(engine)
-    assert not inspector.has_table("community_post")
+    assert not inspector.has_table("community_posts")
     assert not inspector.has_table("comments")
     command.upgrade(config, "head")
     engine.dispose()

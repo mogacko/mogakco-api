@@ -611,7 +611,7 @@ def test_update_changes_allowed_fields_and_preserves_identity(
         assert stored.title == "  after  "
         assert stored.body == "  changed  "
         assert stored.category is CommunityPostCategory.RETROSPECTIVE
-        assert stored.edited_at is not None
+        assert stored.updated_at is not None
         assert (
             stored.id,
             stored.region_id,

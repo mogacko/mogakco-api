@@ -41,26 +41,26 @@ class CommentTargetType(StrEnum):
 
 
 class CommunityPost(Base):
-    __tablename__ = "community_post"
+    __tablename__ = "community_posts"
     __table_args__ = (
         CheckConstraint(
             "char_length(body) <= 3000",
-            name="ck_community_post_body_length",
+            name="ck_community_posts_body_length",
         ),
         Index(
-            "ix_community_post_region_board_created",
+            "ix_community_posts_region_board_created",
             "region_id",
             "board",
             "created_at",
         ),
         Index(
-            "ix_community_post_region_board_category_created",
+            "ix_community_posts_region_board_category_created",
             "region_id",
             "board",
             "category",
             "created_at",
         ),
-        Index("ix_community_post_author_id", "author_id"),
+        Index("ix_community_posts_author_id", "author_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -73,7 +73,7 @@ class CommunityPost(Base):
     author_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
-    region_id: Mapped[int] = mapped_column(ForeignKey("region.id"))
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
     board: Mapped[CommunityPostBoard] = mapped_column(
         Enum(
             CommunityPostBoard,
@@ -95,7 +95,7 @@ class CommunityPost(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
-    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

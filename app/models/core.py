@@ -12,11 +12,11 @@ def utc_now() -> datetime:
 
 
 class Region(Base):
-    __tablename__ = "region"
+    __tablename__ = "regions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(20), unique=True)
-    is_enable: Mapped[bool] = mapped_column(Boolean)
+    is_enabled: Mapped[bool] = mapped_column(Boolean)
 
 
 class User(Base):
@@ -30,7 +30,7 @@ class User(Base):
         server_default=text("gen_random_uuid()"),
     )
     nickname: Mapped[str] = mapped_column(String(30), unique=True)
-    region_id: Mapped[int] = mapped_column(ForeignKey("region.id"))
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, server_default=func.now()
     )

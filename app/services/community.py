@@ -78,7 +78,7 @@ def select_community_posts_with_stats() -> Select:
             User.nickname.label("author_nickname"),
             User.deleted_at.label("author_deleted_at"),
             CommunityPost.created_at,
-            CommunityPost.edited_at,
+            CommunityPost.updated_at,
             func.coalesce(comment_counts.c.comment_count, 0).label(
                 "comment_count"
             ),
@@ -269,7 +269,7 @@ def community_post_list_item_from_row(
         authorNickname=row["author_nickname"] if author_active else None,
         authorAvatarUrl=None,
         createdAt=row["created_at"],
-        updatedAt=row["edited_at"],
+        updatedAt=row["updated_at"],
         likeCount=like_count,
         commentCount=row["comment_count"],
         isLiked=is_liked,
