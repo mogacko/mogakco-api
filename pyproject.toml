@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mogakco-api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.16,<2",
+    "fastapi>=0.116,<1",
+    "pydantic>=2.11,<3",
+    "psycopg[binary]>=3.2,<4",
+    "redis>=6,<7",
+    "sqlalchemy>=2.0,<3",
+]
+
+[project.optional-dependencies]
+test = [
+    "httpx2>=2,<3",
+    "pytest>=8.4,<9",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
