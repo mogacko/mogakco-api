@@ -6,6 +6,7 @@ from app.models.community import (
     CommunityPostCategory,
 )
 from app.models.core import Region, User
+from app.models.event import Event, EventCategory, EventParticipant
 
 __all__ = [
     "Comment",
@@ -13,6 +14,9 @@ __all__ = [
     "CommunityPost",
     "CommunityPostBoard",
     "CommunityPostCategory",
+    "Event",
+    "EventCategory",
+    "EventParticipant",
     "Region",
     "User",
 ]
