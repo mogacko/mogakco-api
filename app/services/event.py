@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.sql import Select
 
 from app.models import Event, EventParticipant
-from app.schemas import EventListItem, EventStatus
+from app.schemas import EventDetailResponse, EventListItem, EventStatus
 
 
 def select_events_with_stats(current_user_id: int) -> Select:
@@ -99,4 +99,15 @@ def event_list_item_from_row(row: Mapping[str, Any]) -> EventListItem:
         status=event_status(row),
         cancelReason=row["cancel_reason"],
         postImageUrl=row["post_image_url"],
+    )
+
+
+def event_detail_from_row(row: Mapping[str, Any]) -> EventDetailResponse:
+    """목록용 공통 필드에 상세 설명과 신청 마감일을 더한다."""
+
+    item = event_list_item_from_row(row)
+    return EventDetailResponse(
+        **item.model_dump(),
+        description=row["description"],
+        dueDate=row["due_date"],
     )

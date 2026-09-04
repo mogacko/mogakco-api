@@ -16,7 +16,7 @@ class EventStatus(StrEnum):
     FULL = "FULL"
     CANCEL = "CANCEL"
     PARTICIPATING = "PARTICIPATING"
-
+    EXPIRED = "EXPIRED" ## 시간이 지난 이벤트는 EXPIRED로 표시한다. 취소된 이벤트는 CANCEL로 표시한다.
 
 class EventListItem(BaseModel):
     """이벤트 목록의 한 항목.

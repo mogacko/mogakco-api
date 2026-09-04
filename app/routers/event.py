@@ -1,17 +1,20 @@
-"""이벤트 목록 조회 HTTP 엔드포인트."""
+"""이벤트 목록 및 상세 조회 HTTP 엔드포인트."""
 
 from datetime import timedelta
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.exceptions import NotFoundError
 from app.models import Event, EventCategory, User
-from app.schemas import EventListItem
+from app.schemas import EventDetailResponse, EventListItem
 from app.schemas.error import error_responses
 from app.services.event import (
+    event_detail_from_row,
     event_list_item_from_row,
     select_events_with_stats,
 )
@@ -64,3 +67,26 @@ def list_events(
     ).mappings().all()
     # 내부 컬럼 이름과 계산 값을 공개 응답 형식으로 변환한다.
     return [event_list_item_from_row(row) for row in rows]
+
+
+@router.get(
+    "/event/{eventUuid}",
+    response_model=EventDetailResponse,
+    responses=error_responses(401, 404, 422, 500),
+    summary="이벤트 상세 조회",
+)
+def get_event_detail(
+    eventUuid: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> EventDetailResponse:
+    """UUID로 삭제되지 않은 이벤트 한 건과 참가 상태를 조회한다."""
+
+    row = db.execute(
+        select_events_with_stats(current_user.id)
+        .add_columns(Event.description, Event.due_date)
+        .where(Event.uuid == eventUuid)
+    ).mappings().one_or_none()
+    if row is None:
+        raise NotFoundError("EVENT_NOT_FOUND", "이벤트를 찾을 수 없습니다.")
+    return event_detail_from_row(row)

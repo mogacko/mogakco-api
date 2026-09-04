@@ -1,9 +1,9 @@
-"""이벤트 목록 API의 조회 조건, 상태 계산, 오류 계약을 검증한다."""
+"""이벤트 API의 조회 조건, 상태 계산, 오류 계약을 검증한다."""
 
 import os
 from collections.abc import Generator
 from datetime import date, datetime, time, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import sqlalchemy as sa
@@ -86,9 +86,11 @@ def add_event(
     db: Session,
     *,
     title: str,
+    description: str = "이벤트 설명 내용",
     category: EventCategory = EventCategory.SEMINAR,
     region_id: int = 1,
     on: date | None = None,
+    due_date: date | None = None,
     start_at: time = time(19, 0),
     end_at: time = time(21, 0),
     price: int = 0,
@@ -99,12 +101,15 @@ def add_event(
 ) -> Event:
     """테스트에 필요한 값만 바꿔 이벤트 한 건을 생성한다."""
 
+    event_date = days(3) if on is None else on
     event = Event(
         region_id=region_id,
         category=category,
         title=title,
+        description=description,
         place="OO 공유오피스 라운지",
-        date=days(3) if on is None else on,
+        date=event_date,
+        due_date=event_date if due_date is None else due_date,
         start_at=start_at,
         end_at=end_at,
         price=price,
@@ -391,6 +396,111 @@ def test_disabled_region_is_not_listed(
     assert response.status_code == 404
 
 
+def test_detail_returns_full_dto(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """상세 조회가 설명, 신청 마감일, 참가 상태를 포함해 반환하는지 확인한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(
+            db,
+            title="이벤트 제목",
+            description="이벤트 설명 내용",
+            category=EventCategory.HACKATHON,
+            on=days(8),
+            due_date=days(5),
+            price=15_000,
+            capacity=7,
+            post_image_url="https://images.example.com/detail.png",
+        )
+        join(db, event.id, viewer_id)
+        db.commit()
+        event_uuid = str(event.uuid)
+
+    response = client.get(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "eventUuid": event_uuid,
+        "categoryName": "HACKATHON",
+        "date": days(8).isoformat(),
+        "startAt": "19:00:00",
+        "endAt": "21:00:00",
+        "title": "이벤트 제목",
+        "place": "OO 공유오피스 라운지",
+        "price": 15_000,
+        "capacity": 7,
+        "currentCount": 1,
+        "status": "PARTICIPATING",
+        "cancelReason": None,
+        "postImageUrl": "https://images.example.com/detail.png",
+        "description": "이벤트 설명 내용",
+        "dueDate": days(5).isoformat(),
+    }
+
+
+def test_detail_returns_404_for_missing_or_deleted_event(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """존재하지 않거나 삭제된 이벤트는 동일한 404 응답을 반환하는지 확인한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        deleted = add_event(db, title="deleted", deleted_at=kst_now())
+        db.commit()
+        deleted_uuid = deleted.uuid
+
+    for event_uuid in (uuid4(), deleted_uuid):
+        response = client.get(
+            f"/api/v1/event/{event_uuid}",
+            headers=auth(viewer_id),
+        )
+        assert response.status_code == 404
+        assert response.json() == {
+            "code": "EVENT_NOT_FOUND",
+            "message": "이벤트를 찾을 수 없습니다.",
+        }
+
+
+def test_detail_requires_authentication(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """상세 조회도 목록과 동일하게 인증을 요구하는지 확인한다."""
+
+    client, _, _ = api
+
+    response = client.get(f"/api/v1/event/{uuid4()}")
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "code": "AUTH_REQUIRED",
+        "message": "로그인이 필요합니다.",
+    }
+
+
+def test_detail_rejects_invalid_uuid(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """UUID 형식이 아닌 경로 값은 표준 422 응답으로 거절하는지 확인한다."""
+
+    client, _, viewer_id = api
+
+    response = client.get(
+        "/api/v1/event/not-a-uuid",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "code": "INVALID_REQUEST",
+        "message": "요청값이 올바르지 않습니다.",
+    }
+
+
 def test_openapi_event_contract() -> None:
     """문서에 이벤트 경로, 태그, 오류 상태 코드가 노출되는지 확인한다."""
 
@@ -400,6 +510,17 @@ def test_openapi_event_contract() -> None:
     assert operation["summary"] == "이벤트 목록 조회"
     assert operation["tags"] == ["이벤트"]
     assert sorted(operation["responses"]) == [
+        "200",
+        "401",
+        "404",
+        "422",
+        "500",
+    ]
+
+    detail_operation = schema["paths"]["/api/v1/event/{eventUuid}"]["get"]
+    assert detail_operation["summary"] == "이벤트 상세 조회"
+    assert detail_operation["tags"] == ["이벤트"]
+    assert sorted(detail_operation["responses"]) == [
         "200",
         "401",
         "404",

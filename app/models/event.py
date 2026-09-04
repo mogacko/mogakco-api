@@ -13,6 +13,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     Time,
     UniqueConstraint,
     Uuid,
@@ -76,8 +77,10 @@ class Event(Base):
         )
     )
     title: Mapped[str] = mapped_column(String(50))
+    description: Mapped[str] = mapped_column(Text)
     place: Mapped[str] = mapped_column(String(100))
     date: Mapped[date] = mapped_column(Date)
+    due_date: Mapped[date] = mapped_column(Date)
     start_at: Mapped[time] = mapped_column(Time)
     end_at: Mapped[time] = mapped_column(Time)
     price: Mapped[int] = mapped_column(Integer)
