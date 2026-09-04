@@ -229,7 +229,7 @@ def test_list_returns_full_dto(
         event_uuid = str(event.uuid)
 
     response = client.get(
-        "/api/v1/event?regionName=seoul",
+        "/api/v1/events?regionName=seoul",
         headers=auth(viewer_id),
     )
 
@@ -301,7 +301,7 @@ def test_status_reflects_capacity_participation_and_cancellation(
         db.commit()
 
     response = client.get(
-        "/api/v1/event?regionName=seoul",
+        "/api/v1/events?regionName=seoul",
         headers=auth(viewer_id),
     )
 
@@ -335,7 +335,7 @@ def test_list_orders_by_date_then_start_time(
         db.commit()
 
     response = client.get(
-        "/api/v1/event?regionName=seoul",
+        "/api/v1/events?regionName=seoul",
         headers=auth(viewer_id),
     )
 
@@ -357,7 +357,7 @@ def test_list_keeps_recent_past_events_and_drops_older(
         db.commit()
 
     response = client.get(
-        "/api/v1/event?regionName=seoul",
+        "/api/v1/events?regionName=seoul",
         headers=auth(viewer_id),
     )
 
@@ -379,11 +379,11 @@ def test_list_filters_by_region_category_and_excludes_deleted(
         db.commit()
 
     everything = client.get(
-        "/api/v1/event?regionName=seoul",
+        "/api/v1/events?regionName=seoul",
         headers=auth(viewer_id),
     )
     filtered = client.get(
-        "/api/v1/event?regionName=seoul&categoryName=NETWORKING",
+        "/api/v1/events?regionName=seoul&categoryName=NETWORKING",
         headers=auth(viewer_id),
     )
 
@@ -403,11 +403,11 @@ def test_list_paginates_with_offset_and_limit(
         db.commit()
 
     first = client.get(
-        "/api/v1/event?regionName=seoul&limit=2",
+        "/api/v1/events?regionName=seoul&limit=2",
         headers=auth(viewer_id),
     )
     second = client.get(
-        "/api/v1/event?regionName=seoul&limit=2&offset=2",
+        "/api/v1/events?regionName=seoul&limit=2&offset=2",
         headers=auth(viewer_id),
     )
 
@@ -422,7 +422,7 @@ def test_list_requires_authentication(
 
     client, _, _ = api
 
-    response = client.get("/api/v1/event?regionName=seoul")
+    response = client.get("/api/v1/events?regionName=seoul")
 
     assert response.status_code == 401
     assert response.json() == {
@@ -453,7 +453,7 @@ def test_list_validates_query_and_enabled_region(
 
     client, _, viewer_id = api
 
-    response = client.get(f"/api/v1/event{query}", headers=auth(viewer_id))
+    response = client.get(f"/api/v1/events{query}", headers=auth(viewer_id))
 
     assert response.status_code == status_code
     if status_code == 404:
@@ -479,7 +479,7 @@ def test_disabled_region_is_not_listed(
         db.commit()
 
     response = client.get(
-        "/api/v1/event?regionName=gyeonggi",
+        "/api/v1/events?regionName=gyeonggi",
         headers=auth(viewer_id),
     )
 
@@ -509,7 +509,7 @@ def test_detail_returns_full_dto(
         event_uuid = str(event.uuid)
 
     response = client.get(
-        f"/api/v1/event/{event_uuid}",
+        f"/api/v1/events/{event_uuid}",
         headers=auth(viewer_id),
     )
 
@@ -546,7 +546,7 @@ def test_detail_returns_404_for_missing_or_deleted_event(
 
     for event_uuid in (uuid4(), deleted_uuid):
         response = client.get(
-            f"/api/v1/event/{event_uuid}",
+            f"/api/v1/events/{event_uuid}",
             headers=auth(viewer_id),
         )
         assert response.status_code == 404
@@ -563,7 +563,7 @@ def test_detail_requires_authentication(
 
     client, _, _ = api
 
-    response = client.get(f"/api/v1/event/{uuid4()}")
+    response = client.get(f"/api/v1/events/{uuid4()}")
 
     assert response.status_code == 401
     assert response.json() == {
@@ -580,7 +580,7 @@ def test_detail_rejects_invalid_uuid(
     client, _, viewer_id = api
 
     response = client.get(
-        "/api/v1/event/not-a-uuid",
+        "/api/v1/events/not-a-uuid",
         headers=auth(viewer_id),
     )
 
@@ -604,7 +604,7 @@ def test_apply_event_increments_counter_and_adds_participant(
         event_uuid = event.uuid
 
     response = client.post(
-        f"/api/v1/event/{event_uuid}",
+        f"/api/v1/events/{event_uuid}/participants",
         headers=auth(viewer_id),
     )
 
@@ -629,7 +629,7 @@ def test_apply_event_requires_authentication(
 
     client, _, _ = api
 
-    response = client.post(f"/api/v1/event/{uuid4()}")
+    response = client.post(f"/api/v1/events/{uuid4()}/participants")
 
     assert response.status_code == 401
     assert response.json() == {
@@ -651,11 +651,11 @@ def test_apply_event_rejects_duplicate_without_incrementing_counter(
         event_uuid = event.uuid
 
     first = client.post(
-        f"/api/v1/event/{event_uuid}",
+        f"/api/v1/events/{event_uuid}/participants",
         headers=auth(viewer_id),
     )
     second = client.post(
-        f"/api/v1/event/{event_uuid}",
+        f"/api/v1/events/{event_uuid}/participants",
         headers=auth(viewer_id),
     )
 
@@ -732,15 +732,15 @@ def test_apply_event_checks_closed_and_full_events(
         uuids = (closed.uuid, full.uuid, due_today.uuid)
 
     closed_response = client.post(
-        f"/api/v1/event/{uuids[0]}",
+        f"/api/v1/events/{uuids[0]}/participants",
         headers=auth(viewer_id),
     )
     full_response = client.post(
-        f"/api/v1/event/{uuids[1]}",
+        f"/api/v1/events/{uuids[1]}/participants",
         headers=auth(viewer_id),
     )
     due_today_response = client.post(
-        f"/api/v1/event/{uuids[2]}",
+        f"/api/v1/events/{uuids[2]}/participants",
         headers=auth(viewer_id),
     )
 
@@ -775,7 +775,7 @@ def test_apply_event_hides_missing_deleted_and_cancelled_events(
 
     for event_uuid in uuids:
         response = client.post(
-            f"/api/v1/event/{event_uuid}",
+            f"/api/v1/events/{event_uuid}/participants",
             headers=auth(viewer_id),
         )
         assert response.status_code == 404
@@ -800,7 +800,7 @@ def test_apply_event_returns_busy_when_event_lock_is_held(
     ] = "another-request"
 
     response = client.post(
-        f"/api/v1/event/{event_uuid}",
+        f"/api/v1/events/{event_uuid}/participants",
         headers=auth(viewer_id),
     )
 
@@ -824,7 +824,7 @@ def test_apply_event_falls_back_to_database_when_redis_fails(
         event_uuid = event.uuid
 
     response = client.post(
-        f"/api/v1/event/{event_uuid}",
+        f"/api/v1/events/{event_uuid}/participants",
         headers=auth(viewer_id),
     )
 
@@ -890,8 +890,8 @@ def test_cancel_event_removes_participant_and_decrements_counter(
         event_id = event.id
         event_uuid = event.uuid
 
-    response = client.patch(
-        f"/api/v1/event/{event_uuid}",
+    response = client.delete(
+        f"/api/v1/events/{event_uuid}/participants",
         headers=auth(viewer_id),
     )
 
@@ -916,7 +916,7 @@ def test_cancel_event_requires_authentication(
 
     client, _, _ = api
 
-    response = client.patch(f"/api/v1/event/{uuid4()}")
+    response = client.delete(f"/api/v1/events/{uuid4()}/participants")
 
     assert response.status_code == 401
     assert response.json() == {
@@ -944,8 +944,8 @@ def test_cancel_event_hides_missing_deleted_and_cancelled_events(
         uuids = (uuid4(), deleted.uuid, cancelled.uuid)
 
     for event_uuid in uuids:
-        response = client.patch(
-            f"/api/v1/event/{event_uuid}",
+        response = client.delete(
+            f"/api/v1/events/{event_uuid}/participants",
             headers=auth(viewer_id),
         )
         assert response.status_code == 404
@@ -966,8 +966,8 @@ def test_cancel_event_rejects_missing_application(
         db.commit()
         event_uuid = event.uuid
 
-    response = client.patch(
-        f"/api/v1/event/{event_uuid}",
+    response = client.delete(
+        f"/api/v1/events/{event_uuid}/participants",
         headers=auth(viewer_id),
     )
 
@@ -991,8 +991,8 @@ def test_cancel_event_rejects_expired_event_without_mutation(
         event_id = event.id
         event_uuid = event.uuid
 
-    response = client.patch(
-        f"/api/v1/event/{event_uuid}",
+    response = client.delete(
+        f"/api/v1/events/{event_uuid}/participants",
         headers=auth(viewer_id),
     )
 
@@ -1028,8 +1028,8 @@ def test_cancel_event_returns_busy_when_participation_lock_is_held(
         f"event:participation:{event_uuid}"
     ] = "another-request"
 
-    response = client.patch(
-        f"/api/v1/event/{event_uuid}",
+    response = client.delete(
+        f"/api/v1/events/{event_uuid}/participants",
         headers=auth(viewer_id),
     )
 
@@ -1053,8 +1053,8 @@ def test_cancel_event_falls_back_to_database_when_redis_fails(
         db.commit()
         event_uuid = event.uuid
 
-    response = client.patch(
-        f"/api/v1/event/{event_uuid}",
+    response = client.delete(
+        f"/api/v1/events/{event_uuid}/participants",
         headers=auth(viewer_id),
     )
 
@@ -1104,7 +1104,7 @@ def test_openapi_event_contract() -> None:
     """문서에 이벤트 경로, 태그, 오류 상태 코드가 노출되는지 확인한다."""
 
     schema = app.openapi()
-    operation = schema["paths"]["/api/v1/event"]["get"]
+    operation = schema["paths"]["/api/v1/events"]["get"]
 
     assert operation["summary"] == "이벤트 목록 조회"
     assert operation["tags"] == ["이벤트"]
@@ -1116,7 +1116,7 @@ def test_openapi_event_contract() -> None:
         "500",
     ]
 
-    detail_operation = schema["paths"]["/api/v1/event/{eventUuid}"]["get"]
+    detail_operation = schema["paths"]["/api/v1/events/{eventUuid}"]["get"]
     assert detail_operation["summary"] == "이벤트 상세 조회"
     assert detail_operation["tags"] == ["이벤트"]
     assert sorted(detail_operation["responses"]) == [
@@ -1127,7 +1127,10 @@ def test_openapi_event_contract() -> None:
         "500",
     ]
 
-    apply_operation = schema["paths"]["/api/v1/event/{eventUuid}"]["post"]
+    participation_path = schema["paths"][
+        "/api/v1/events/{eventUuid}/participants"
+    ]
+    apply_operation = participation_path["post"]
     assert apply_operation["summary"] == "이벤트 참가 신청"
     assert apply_operation["tags"] == ["이벤트"]
     assert sorted(apply_operation["responses"]) == [
@@ -1141,7 +1144,7 @@ def test_openapi_event_contract() -> None:
         "500",
     ]
 
-    cancel_operation = schema["paths"]["/api/v1/event/{eventUuid}"]["patch"]
+    cancel_operation = participation_path["delete"]
     assert cancel_operation["summary"] == "이벤트 참가 신청 취소"
     assert cancel_operation["tags"] == ["이벤트"]
     assert sorted(cancel_operation["responses"]) == [

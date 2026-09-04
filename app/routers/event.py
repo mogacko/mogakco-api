@@ -33,7 +33,7 @@ PAST_EVENT_RETENTION_DAYS = 7
 
 
 @router.get(
-    "/event",
+    "/events",
     response_model=list[EventListItem],
     responses=error_responses(401, 404, 422, 500),
     summary="이벤트 목록 조회",
@@ -75,7 +75,7 @@ def list_events(
 
 
 @router.get(
-    "/event/{eventUuid}",
+    "/events/{eventUuid}",
     response_model=EventDetailResponse,
     responses=error_responses(401, 404, 422, 500),
     summary="이벤트 상세 조회",
@@ -98,7 +98,7 @@ def get_event_detail(
 
 
 @router.post(
-    "/event/{eventUuid}",
+    "/events/{eventUuid}/participants",
     status_code=status.HTTP_200_OK,
     response_class=Response,
     responses=error_responses(400, 401, 404, 409, 422, 429, 500),
@@ -117,8 +117,8 @@ def apply_event(
     return Response(status_code=status.HTTP_200_OK)
 
 
-@router.patch(
-    "/event/{eventUuid}",
+@router.delete(
+    "/events/{eventUuid}/participants",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
     responses=error_responses(400, 401, 404, 422, 429, 500),
