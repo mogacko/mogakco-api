@@ -17,9 +17,10 @@ from app.schemas import EventDetailResponse, EventListItem
 from app.schemas.error import error_responses
 from app.services.event import (
     apply_to_event,
-    event_application_lock,
+    cancel_event_application,
     event_detail_from_row,
     event_list_item_from_row,
+    event_participation_lock,
     select_events_with_stats,
 )
 from app.services.region import enabled_region
@@ -88,7 +89,7 @@ def get_event_detail(
 
     row = db.execute(
         select_events_with_stats(current_user.id)
-        .add_columns(Event.description)
+        .add_columns(Event.description, Event.due_date)
         .where(Event.uuid == eventUuid)
     ).mappings().one_or_none()
     if row is None:
@@ -111,6 +112,26 @@ def apply_event(
 ) -> Response:
     """이벤트별 진입을 직렬화하고 DB에서 정원을 원자적으로 확보한다."""
 
-    with event_application_lock(redis, eventUuid):
+    with event_participation_lock(redis, eventUuid):
         apply_to_event(db, eventUuid, current_user.id)
     return Response(status_code=status.HTTP_200_OK)
+
+
+@router.patch(
+    "/event/{eventUuid}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    responses=error_responses(400, 401, 404, 422, 429, 500),
+    summary="이벤트 참가 신청 취소",
+)
+def cancel_event(
+    eventUuid: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
+) -> Response:
+    """참가 관계와 이벤트 참가 인원 카운터를 함께 감소시킨다."""
+
+    with event_participation_lock(redis, eventUuid):
+        cancel_event_application(db, eventUuid, current_user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

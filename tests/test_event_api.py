@@ -16,7 +16,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
 
 from app.database import create_db_engine, get_db
-from app.exceptions import ConflictError
+from app.exceptions import BadRequestError, ConflictError
 from app.main import app
 from app.models import (
     Comment,
@@ -28,7 +28,7 @@ from app.models import (
 )
 from app.routers.event import PAST_EVENT_RETENTION_DAYS
 from app.redis_client import get_redis_client
-from app.services.event import apply_to_event
+from app.services.event import apply_to_event, cancel_event_application
 from app.time import kst_now
 
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -265,8 +265,8 @@ def test_status_reflects_capacity_participation_and_cancellation(
         add_event(
             db,
             title="expired",
-            on=days(0),
-            due_date=days(-1),
+            on=days(-1),
+            due_date=days(-2),
         )
 
         full = add_event(db, title="full", on=days(2), capacity=1)
@@ -290,6 +290,14 @@ def test_status_reflects_capacity_participation_and_cancellation(
             cancel_reason="강사 사정으로 취소되었습니다.",
         )
         join(db, cancelled.id, viewer_id)
+
+        # 신청 마감일이 지났어도 행사 날짜가 남아 있으면 EXPIRED가 아니다.
+        add_event(
+            db,
+            title="application-closed",
+            on=days(6),
+            due_date=days(-1),
+        )
         db.commit()
 
     response = client.get(
@@ -305,8 +313,12 @@ def test_status_reflects_capacity_participation_and_cancellation(
         ("mine", "PARTICIPATING"),
         ("mine-full", "PARTICIPATING"),
         ("cancelled", "CANCEL"),
+        ("application-closed", "OPEN"),
     ]
-    assert response.json()[-1]["cancelReason"] == "강사 사정으로 취소되었습니다."
+    cancelled_item = next(
+        item for item in response.json() if item["title"] == "cancelled"
+    )
+    assert cancelled_item["cancelReason"] == "강사 사정으로 취소되었습니다."
 
 
 def test_list_orders_by_date_then_start_time(
@@ -783,7 +795,9 @@ def test_apply_event_returns_busy_when_event_lock_is_held(
         event = add_event(db, title="busy")
         db.commit()
         event_uuid = event.uuid
-    _EVENT_REDIS.values[f"event:apply:{event_uuid}"] = "another-request"
+    _EVENT_REDIS.values[
+        f"event:participation:{event_uuid}"
+    ] = "another-request"
 
     response = client.post(
         f"/api/v1/event/{event_uuid}",
@@ -792,8 +806,8 @@ def test_apply_event_returns_busy_when_event_lock_is_held(
 
     assert response.status_code == 429
     assert response.json() == {
-        "code": "EVENT_APPLY_BUSY",
-        "message": "신청 요청이 많습니다. 잠시 후 다시 시도해주세요.",
+        "code": "EVENT_PARTICIPATION_BUSY",
+        "message": "참가 요청이 많습니다. 잠시 후 다시 시도해주세요.",
     }
 
 
@@ -858,6 +872,234 @@ def test_atomic_counter_allows_only_one_user_into_last_seat(
         ) == 1
 
 
+def test_cancel_event_removes_participant_and_decrements_counter(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """행사 당일까지 참가 신청을 취소하고 카운터를 함께 감소시킨다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(
+            db,
+            title="cancel-application",
+            on=days(0),
+            due_date=days(-1),
+        )
+        join(db, event.id, viewer_id)
+        db.commit()
+        event_id = event.id
+        event_uuid = event.uuid
+
+    response = client.patch(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 204
+    assert response.content == b""
+    with Session(engine) as db:
+        assert db.scalar(
+            sa.select(Event.current_count).where(Event.id == event_id)
+        ) == 0
+        assert db.scalar(
+            sa.select(EventParticipant.id).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == viewer_id,
+            )
+        ) is None
+
+
+def test_cancel_event_requires_authentication(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """참가 취소도 공통 인증 의존성을 거치는지 확인한다."""
+
+    client, _, _ = api
+
+    response = client.patch(f"/api/v1/event/{uuid4()}")
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "code": "AUTH_REQUIRED",
+        "message": "로그인이 필요합니다.",
+    }
+
+
+def test_cancel_event_hides_missing_deleted_and_cancelled_events(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """없거나 삭제·취소된 이벤트의 참가 신청은 동일한 404로 숨긴다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        deleted = add_event(db, title="deleted", deleted_at=kst_now())
+        cancelled = add_event(
+            db,
+            title="cancelled",
+            cancel_reason="운영 사정",
+        )
+        join(db, deleted.id, viewer_id)
+        join(db, cancelled.id, viewer_id)
+        db.commit()
+        uuids = (uuid4(), deleted.uuid, cancelled.uuid)
+
+    for event_uuid in uuids:
+        response = client.patch(
+            f"/api/v1/event/{event_uuid}",
+            headers=auth(viewer_id),
+        )
+        assert response.status_code == 404
+        assert response.json() == {
+            "code": "EVENT_NOT_FOUND",
+            "message": "존재하지 않는 행사입니다.",
+        }
+
+
+def test_cancel_event_rejects_missing_application(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """참가 신청 내역이 없다면 카운터를 변경하지 않는다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="not-applied")
+        db.commit()
+        event_uuid = event.uuid
+
+    response = client.patch(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "APPLICATION_NOT_FOUND",
+        "message": "신청 내역이 존재하지 않거나 이미 취소되었습니다.",
+    }
+
+
+def test_cancel_event_rejects_expired_event_without_mutation(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """행사 날짜가 지난 신청은 취소하거나 카운터를 감소시키지 않는다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="expired-cancel", on=days(-1))
+        join(db, event.id, viewer_id)
+        db.commit()
+        event_id = event.id
+        event_uuid = event.uuid
+
+    response = client.patch(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "CANCEL_PERIOD_EXPIRED",
+        "message": "취소 가능 기간이 지났습니다.",
+    }
+    with Session(engine) as db:
+        assert db.scalar(
+            sa.select(Event.current_count).where(Event.id == event_id)
+        ) == 1
+        assert db.scalar(
+            sa.select(EventParticipant.id).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == viewer_id,
+            )
+        ) is not None
+
+
+def test_cancel_event_returns_busy_when_participation_lock_is_held(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """참가 락이 점유 중이면 취소도 짧게 재시도한 뒤 429를 반환한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="cancel-busy")
+        join(db, event.id, viewer_id)
+        db.commit()
+        event_uuid = event.uuid
+    _EVENT_REDIS.values[
+        f"event:participation:{event_uuid}"
+    ] = "another-request"
+
+    response = client.patch(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 429
+    assert response.json() == {
+        "code": "EVENT_PARTICIPATION_BUSY",
+        "message": "참가 요청이 많습니다. 잠시 후 다시 시도해주세요.",
+    }
+
+
+def test_cancel_event_falls_back_to_database_when_redis_fails(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """Redis 장애 중에도 DB 트랜잭션으로 참가 취소를 안전하게 처리한다."""
+
+    client, engine, viewer_id = api
+    app.dependency_overrides[get_redis_client] = BrokenEventRedis
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="cancel-redis-down")
+        join(db, event.id, viewer_id)
+        db.commit()
+        event_uuid = event.uuid
+
+    response = client.patch(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 204
+
+
+def test_concurrent_cancellation_decrements_counter_only_once(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """동일 신청을 동시에 취소해도 참가 행과 카운터를 한 번만 줄인다."""
+
+    _, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="cancel-race")
+        join(db, event.id, viewer_id)
+        db.commit()
+        event_id = event.id
+        event_uuid = event.uuid
+
+    barrier = Barrier(2)
+
+    def cancel() -> str:
+        with Session(engine) as db:
+            barrier.wait()
+            try:
+                cancel_event_application(db, event_uuid, viewer_id)
+            except BadRequestError as error:
+                return error.code
+            return "OK"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: cancel(), range(2)))
+
+    assert sorted(results) == ["APPLICATION_NOT_FOUND", "OK"]
+    with Session(engine) as db:
+        assert db.scalar(
+            sa.select(Event.current_count).where(Event.id == event_id)
+        ) == 0
+        assert db.scalar(
+            sa.select(sa.func.count(EventParticipant.id)).where(
+                EventParticipant.event_id == event_id
+            )
+        ) == 0
+
+
 def test_openapi_event_contract() -> None:
     """문서에 이벤트 경로, 태그, 오류 상태 코드가 노출되는지 확인한다."""
 
@@ -894,6 +1136,19 @@ def test_openapi_event_contract() -> None:
         "401",
         "404",
         "409",
+        "422",
+        "429",
+        "500",
+    ]
+
+    cancel_operation = schema["paths"]["/api/v1/event/{eventUuid}"]["patch"]
+    assert cancel_operation["summary"] == "이벤트 참가 신청 취소"
+    assert cancel_operation["tags"] == ["이벤트"]
+    assert sorted(cancel_operation["responses"]) == [
+        "204",
+        "400",
+        "401",
+        "404",
         "422",
         "429",
         "500",
