@@ -51,6 +51,10 @@ class Event(Base):
             "capacity >= 0",
             name="ck_events_capacity_non_negative",
         ),
+        CheckConstraint(
+            "current_count >= 0 AND current_count <= capacity",
+            name="ck_events_current_count_range",
+        ),
         Index(
             "ix_events_region_category_date",
             "region_id",
@@ -85,6 +89,11 @@ class Event(Base):
     end_at: Mapped[time] = mapped_column(Time)
     price: Mapped[int] = mapped_column(Integer)
     capacity: Mapped[int] = mapped_column(Integer)
+    current_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+    )
     post_image_url: Mapped[str | None] = mapped_column(String(500))
     cancel_reason: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(
@@ -106,7 +115,7 @@ class EventParticipant(Base):
         UniqueConstraint(
             "event_id",
             "user_id",
-            name="uq_event_participants_event_id",
+            name="uq_event_participants_event_id_user_id",
         ),
         Index("ix_event_participants_user_id", "user_id"),
     )

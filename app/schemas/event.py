@@ -16,13 +16,15 @@ class EventStatus(StrEnum):
     FULL = "FULL"
     CANCEL = "CANCEL"
     PARTICIPATING = "PARTICIPATING"
-    EXPIRED = "EXPIRED" ## 시간이 지난 이벤트는 EXPIRED로 표시한다. 취소된 이벤트는 CANCEL로 표시한다.
+    # 신청 마감일이 지난 이벤트는 EXPIRED, 취소된 이벤트는 CANCEL로 표시한다.
+    EXPIRED = "EXPIRED"
+
 
 class EventListItem(BaseModel):
     """이벤트 목록의 한 항목.
 
-    필드명은 기존 API 계약에 맞춰 camelCase를 그대로 사용한다. ``currentCount``와
-    ``status``는 DB 컬럼이 아니라 조회 시 참가 정보를 바탕으로 계산되는 값이다.
+    필드명은 기존 API 계약에 맞춰 camelCase를 그대로 사용한다. ``currentCount``는
+    DB에서 원자적으로 관리하고, ``status``는 조회 시 이벤트 정보를 바탕으로 계산한다.
     """
 
     eventUuid: UUID
@@ -38,3 +40,10 @@ class EventListItem(BaseModel):
     status: EventStatus
     cancelReason: str | None
     postImageUrl: str | None
+
+
+class EventDetailResponse(EventListItem):
+    """목록 항목에 설명과 신청 마감일을 더한 이벤트 상세 응답."""
+
+    description: str
+    dueDate: date

@@ -4,16 +4,20 @@ from datetime import timedelta
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response, status
+from redis import Redis
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.exceptions import NotFoundError
 from app.models import Event, EventCategory, User
+from app.redis_client import get_redis_client
 from app.schemas import EventDetailResponse, EventListItem
 from app.schemas.error import error_responses
 from app.services.event import (
+    apply_to_event,
+    event_application_lock,
     event_detail_from_row,
     event_list_item_from_row,
     select_events_with_stats,
@@ -84,9 +88,29 @@ def get_event_detail(
 
     row = db.execute(
         select_events_with_stats(current_user.id)
-        .add_columns(Event.description, Event.due_date)
+        .add_columns(Event.description)
         .where(Event.uuid == eventUuid)
     ).mappings().one_or_none()
     if row is None:
         raise NotFoundError("EVENT_NOT_FOUND", "이벤트를 찾을 수 없습니다.")
     return event_detail_from_row(row)
+
+
+@router.post(
+    "/event/{eventUuid}",
+    status_code=status.HTTP_200_OK,
+    response_class=Response,
+    responses=error_responses(400, 401, 404, 409, 422, 429, 500),
+    summary="이벤트 참가 신청",
+)
+def apply_event(
+    eventUuid: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis_client)],
+) -> Response:
+    """이벤트별 진입을 직렬화하고 DB에서 정원을 원자적으로 확보한다."""
+
+    with event_application_lock(redis, eventUuid):
+        apply_to_event(db, eventUuid, current_user.id)
+    return Response(status_code=status.HTTP_200_OK)

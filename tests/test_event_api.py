@@ -2,7 +2,9 @@
 
 import os
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
+from threading import Barrier, Lock
 from uuid import UUID, uuid4
 
 import pytest
@@ -10,9 +12,11 @@ import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
 
 from app.database import create_db_engine, get_db
+from app.exceptions import ConflictError
 from app.main import app
 from app.models import (
     Comment,
@@ -23,10 +27,69 @@ from app.models import (
     User,
 )
 from app.routers.event import PAST_EVENT_RETENTION_DAYS
+from app.redis_client import get_redis_client
+from app.services.event import apply_to_event
 from app.time import kst_now
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 _DEBUG_USER_UUIDS: dict[int, UUID] = {}
+
+
+class FakeEventRedis:
+    """이벤트 락 테스트에 필요한 Redis 명령만 메모리에서 제공한다."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.mutex = Lock()
+
+    def clear(self) -> None:
+        with self.mutex:
+            self.values.clear()
+
+    def set(
+        self,
+        key: str,
+        value: str,
+        *,
+        nx: bool,
+        px: int,
+    ) -> bool:
+        del px
+        with self.mutex:
+            if nx and key in self.values:
+                return False
+            self.values[key] = value
+            return True
+
+    def eval(
+        self,
+        _script: str,
+        _key_count: int,
+        key: str,
+        token: str,
+    ) -> int:
+        with self.mutex:
+            if self.values.get(key) != token:
+                return 0
+            del self.values[key]
+            return 1
+
+
+class BrokenEventRedis(FakeEventRedis):
+    """Redis 장애 시 DB 보호 로직으로 진행되는지 확인하는 대역."""
+
+    def set(
+        self,
+        key: str,
+        value: str,
+        *,
+        nx: bool,
+        px: int,
+    ) -> bool:
+        raise RedisError("redis unavailable")
+
+
+_EVENT_REDIS = FakeEventRedis()
 
 DISABLED_REGION_ID = 3  # gyeonggi, 0001_initial 시드에서 is_enabled=False
 
@@ -68,6 +131,8 @@ def api(
     monkeypatch.setenv("ENABLE_DEBUG_AUTH", "true")
     monkeypatch.delenv("DEBUG_DEFAULT_USER_UUID", raising=False)
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_redis_client] = lambda: _EVENT_REDIS
+    _EVENT_REDIS.clear()
     with TestClient(app) as client:
         yield client, engine, viewer_id
     app.dependency_overrides.clear()
@@ -126,6 +191,11 @@ def add_event(
 def join(db: Session, event_id: int, user_id: int) -> None:
     """지정한 사용자를 이벤트 참가자로 등록한다."""
 
+    db.execute(
+        sa.update(Event)
+        .where(Event.id == event_id)
+        .values(current_count=Event.current_count + 1)
+    )
     db.add(EventParticipant(event_id=event_id, user_id=user_id))
 
 
@@ -192,6 +262,13 @@ def test_status_reflects_capacity_participation_and_cancellation(
     with Session(engine, expire_on_commit=False) as db:
         add_event(db, title="open", on=days(1), capacity=2)
 
+        add_event(
+            db,
+            title="expired",
+            on=days(0),
+            due_date=days(-1),
+        )
+
         full = add_event(db, title="full", on=days(2), capacity=1)
         stranger = User(nickname="stranger", region_id=1)
         db.add(stranger)
@@ -222,6 +299,7 @@ def test_status_reflects_capacity_participation_and_cancellation(
 
     assert response.status_code == 200
     assert [(item["title"], item["status"]) for item in response.json()] == [
+        ("expired", "EXPIRED"),
         ("open", "OPEN"),
         ("full", "FULL"),
         ("mine", "PARTICIPATING"),
@@ -501,6 +579,285 @@ def test_detail_rejects_invalid_uuid(
     }
 
 
+def test_apply_event_increments_counter_and_adds_participant(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """신청 성공 시 카운터와 참가 관계가 같은 요청에서 저장되는지 확인한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="apply", capacity=2)
+        db.commit()
+        event_id = event.id
+        event_uuid = event.uuid
+
+    response = client.post(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 200
+    assert response.content == b""
+    with Session(engine) as db:
+        assert db.scalar(
+            sa.select(Event.current_count).where(Event.id == event_id)
+        ) == 1
+        assert db.scalar(
+            sa.select(sa.func.count(EventParticipant.id)).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == viewer_id,
+            )
+        ) == 1
+
+
+def test_apply_event_requires_authentication(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """참가 신청도 공통 인증 의존성을 거치는지 확인한다."""
+
+    client, _, _ = api
+
+    response = client.post(f"/api/v1/event/{uuid4()}")
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "code": "AUTH_REQUIRED",
+        "message": "로그인이 필요합니다.",
+    }
+
+
+def test_apply_event_rejects_duplicate_without_incrementing_counter(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """중복 신청은 UNIQUE 제약과 트랜잭션 롤백으로 카운터를 보존한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="duplicate", capacity=2)
+        db.commit()
+        event_id = event.id
+        event_uuid = event.uuid
+
+    first = client.post(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+    second = client.post(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json() == {
+        "code": "ALREADY_APPLIED",
+        "message": "이미 신청한 행사입니다.",
+    }
+    with Session(engine) as db:
+        assert db.scalar(
+            sa.select(Event.current_count).where(Event.id == event_id)
+        ) == 1
+
+
+def test_unique_constraint_rolls_back_concurrent_duplicate_counter(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """동일 사용자의 동시 신청 중 하나는 롤백되어 카운터가 어긋나지 않는다."""
+
+    _, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="duplicate-race", capacity=2)
+        db.commit()
+        event_id = event.id
+        event_uuid = event.uuid
+
+    barrier = Barrier(2)
+
+    def submit() -> str:
+        with Session(engine) as db:
+            barrier.wait()
+            try:
+                apply_to_event(db, event_uuid, viewer_id)
+            except ConflictError as error:
+                return error.code
+            return "OK"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: submit(), range(2)))
+
+    assert sorted(results) == ["ALREADY_APPLIED", "OK"]
+    with Session(engine) as db:
+        assert db.scalar(
+            sa.select(Event.current_count).where(Event.id == event_id)
+        ) == 1
+        assert db.scalar(
+            sa.select(sa.func.count(EventParticipant.id)).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == viewer_id,
+            )
+        ) == 1
+
+
+def test_apply_event_checks_closed_and_full_events(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """마감일과 정원 조건을 구분하고 마감 당일 신청은 허용한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        closed = add_event(
+            db,
+            title="closed",
+            due_date=days(-1),
+        )
+        full = add_event(db, title="full", capacity=0)
+        due_today = add_event(
+            db,
+            title="due-today",
+            due_date=days(0),
+        )
+        db.commit()
+        uuids = (closed.uuid, full.uuid, due_today.uuid)
+
+    closed_response = client.post(
+        f"/api/v1/event/{uuids[0]}",
+        headers=auth(viewer_id),
+    )
+    full_response = client.post(
+        f"/api/v1/event/{uuids[1]}",
+        headers=auth(viewer_id),
+    )
+    due_today_response = client.post(
+        f"/api/v1/event/{uuids[2]}",
+        headers=auth(viewer_id),
+    )
+
+    assert closed_response.status_code == 400
+    assert closed_response.json() == {
+        "code": "EVENT_CLOSED",
+        "message": "모집 기간이 종료되었습니다.",
+    }
+    assert full_response.status_code == 409
+    assert full_response.json() == {
+        "code": "EVENT_FULL",
+        "message": "정원이 마감되어 신청할 수 없습니다.",
+    }
+    assert due_today_response.status_code == 200
+
+
+def test_apply_event_hides_missing_deleted_and_cancelled_events(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """없거나 삭제·취소된 이벤트는 같은 404 계약으로 숨긴다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        deleted = add_event(db, title="deleted", deleted_at=kst_now())
+        cancelled = add_event(
+            db,
+            title="cancelled",
+            cancel_reason="운영 사정",
+        )
+        db.commit()
+        uuids = (uuid4(), deleted.uuid, cancelled.uuid)
+
+    for event_uuid in uuids:
+        response = client.post(
+            f"/api/v1/event/{event_uuid}",
+            headers=auth(viewer_id),
+        )
+        assert response.status_code == 404
+        assert response.json() == {
+            "code": "EVENT_NOT_FOUND",
+            "message": "존재하지 않거나 취소된 행사입니다.",
+        }
+
+
+def test_apply_event_returns_busy_when_event_lock_is_held(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """다른 요청이 이벤트 락을 점유하면 짧게 재시도한 뒤 429를 반환한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="busy")
+        db.commit()
+        event_uuid = event.uuid
+    _EVENT_REDIS.values[f"event:apply:{event_uuid}"] = "another-request"
+
+    response = client.post(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 429
+    assert response.json() == {
+        "code": "EVENT_APPLY_BUSY",
+        "message": "신청 요청이 많습니다. 잠시 후 다시 시도해주세요.",
+    }
+
+
+def test_apply_event_falls_back_to_database_when_redis_fails(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """Redis 장애가 나도 DB 원자적 갱신으로 신청을 처리한다."""
+
+    client, engine, viewer_id = api
+    app.dependency_overrides[get_redis_client] = BrokenEventRedis
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="redis-down")
+        db.commit()
+        event_uuid = event.uuid
+
+    response = client.post(
+        f"/api/v1/event/{event_uuid}",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 200
+
+
+def test_atomic_counter_allows_only_one_user_into_last_seat(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """동시에 마지막 자리를 신청해도 DB가 한 요청만 성공시킨다."""
+
+    _, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        other = User(nickname="event-concurrent", region_id=1)
+        db.add(other)
+        event = add_event(db, title="last-seat", capacity=1)
+        db.commit()
+        other_id = other.id
+        event_id = event.id
+        event_uuid = event.uuid
+
+    barrier = Barrier(2)
+
+    def submit(user_id: int) -> str:
+        with Session(engine) as db:
+            barrier.wait()
+            try:
+                apply_to_event(db, event_uuid, user_id)
+            except ConflictError as error:
+                return error.code
+            return "OK"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(submit, (viewer_id, other_id)))
+
+    assert sorted(results) == ["EVENT_FULL", "OK"]
+    with Session(engine) as db:
+        assert db.scalar(
+            sa.select(Event.current_count).where(Event.id == event_id)
+        ) == 1
+        assert db.scalar(
+            sa.select(sa.func.count(EventParticipant.id)).where(
+                EventParticipant.event_id == event_id
+            )
+        ) == 1
+
+
 def test_openapi_event_contract() -> None:
     """문서에 이벤트 경로, 태그, 오류 상태 코드가 노출되는지 확인한다."""
 
@@ -525,5 +882,19 @@ def test_openapi_event_contract() -> None:
         "401",
         "404",
         "422",
+        "500",
+    ]
+
+    apply_operation = schema["paths"]["/api/v1/event/{eventUuid}"]["post"]
+    assert apply_operation["summary"] == "이벤트 참가 신청"
+    assert apply_operation["tags"] == ["이벤트"]
+    assert sorted(apply_operation["responses"]) == [
+        "200",
+        "400",
+        "401",
+        "404",
+        "409",
+        "422",
+        "429",
         "500",
     ]
