@@ -2,22 +2,59 @@
 
 from datetime import date, time
 from enum import StrEnum
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.models import EventCategory
 
 
-class EventStatus(StrEnum):
-    """클라이언트에 노출하는 이벤트의 현재 상태."""
+class EventDisplayStatus(StrEnum):
+    """공개 조회에서 클라이언트에 노출하는 계산된 이벤트 상태."""
 
     OPEN = "OPEN"
     FULL = "FULL"
     CANCEL = "CANCEL"
     PARTICIPATING = "PARTICIPATING"
-    # 신청 마감일이 지난 이벤트는 EXPIRED, 취소된 이벤트는 CANCEL로 표시한다.
+    # 행사 날짜가 지난 이벤트는 DB 갱신 없이 EXPIRED로 계산한다.
     EXPIRED = "EXPIRED"
+
+
+RequiredText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+EventTitle = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=50),
+]
+EventPlace = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+]
+
+
+class EventCreateRequest(BaseModel):
+    """이벤트 등록 신청에 필요한 입력값."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    categoryName: EventCategory
+    title: EventTitle
+    description: RequiredText
+    place: EventPlace
+    date: date
+    startAt: time
+    endAt: time
+    capacity: int = Field(ge=1)
+    dueDate: date
+    postImageUrl: Annotated[str, StringConstraints(max_length=500)] | None = None
+    price: int = Field(ge=0)
+
+
+class EventCreateResponse(BaseModel):
+    """등록 신청이 저장된 이벤트의 식별자와 안내 문구."""
+
+    eventUuid: UUID
+    message: str
 
 
 class EventListItem(BaseModel):
@@ -37,7 +74,7 @@ class EventListItem(BaseModel):
     price: int = Field(ge=0)
     capacity: int = Field(ge=0)
     currentCount: int = Field(ge=0)
-    status: EventStatus
+    status: EventDisplayStatus
     cancelReason: str | None
     postImageUrl: str | None
 

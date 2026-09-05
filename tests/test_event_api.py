@@ -24,6 +24,7 @@ from app.models import (
     Event,
     EventCategory,
     EventParticipant,
+    EventStatus,
     User,
 )
 from app.routers.event import PAST_EVENT_RETENTION_DAYS
@@ -162,13 +163,22 @@ def add_event(
     capacity: int = 10,
     post_image_url: str | None = None,
     cancel_reason: str | None = None,
+    host_id: int | None = None,
+    status: EventStatus | None = None,
     deleted_at: datetime | None = None,
 ) -> Event:
     """테스트에 필요한 값만 바꿔 이벤트 한 건을 생성한다."""
 
     event_date = days(3) if on is None else on
+    stored_status = status or (
+        EventStatus.CANCEL
+        if cancel_reason is not None
+        else EventStatus.APPROVED
+    )
     event = Event(
         region_id=region_id,
+        host_id=host_id,
+        status=stored_status,
         category=category,
         title=title,
         description=description,
@@ -203,6 +213,133 @@ def titles(response) -> list[str]:
     """목록 응답에서 정렬과 필터 확인에 필요한 제목만 추출한다."""
 
     return [item["title"] for item in response.json()]
+
+
+def event_create_payload(**changes: object) -> dict[str, object]:
+    """행사 등록 테스트의 기본 요청 본문을 만든다."""
+
+    payload: dict[str, object] = {
+        "categoryName": "SEMINAR",
+        "title": "이벤트 제목",
+        "description": "이벤트 설명 내용",
+        "place": "OO 공유오피스 라운지",
+        "date": days(3).isoformat(),
+        "startAt": "19:00:00",
+        "endAt": "21:00:00",
+        "capacity": 7,
+        "dueDate": days(2).isoformat(),
+        "postImageUrl": "https://images.example.com/event.png",
+        "price": 0,
+    }
+    payload.update(changes)
+    return payload
+
+
+def test_create_event_registers_pending_host_as_first_participant(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """등록 요청자와 참가 카운터가 승인 대기 행사에 함께 저장되는지 확인한다."""
+
+    client, engine, viewer_id = api
+
+    response = client.post(
+        "/api/v1/events",
+        headers=auth(viewer_id),
+        json=event_create_payload(),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["message"] == "행사가 성공적으로 등록되었습니다."
+    event_uuid = UUID(response.json()["eventUuid"])
+    with Session(engine) as db:
+        event = db.scalar(sa.select(Event).where(Event.uuid == event_uuid))
+        assert event is not None
+        assert event.host_id == viewer_id
+        assert event.region_id == 1
+        assert event.status is EventStatus.PENDING
+        assert event.current_count == 1
+        assert event.category is EventCategory.SEMINAR
+        assert event.title == "이벤트 제목"
+        assert event.description == "이벤트 설명 내용"
+        assert event.place == "OO 공유오피스 라운지"
+        assert event.date == days(3)
+        assert event.due_date == days(2)
+        assert event.start_at == time(19, 0)
+        assert event.end_at == time(21, 0)
+        assert event.capacity == 7
+        assert event.price == 0
+        assert event.post_image_url == "https://images.example.com/event.png"
+        assert db.scalar(
+            sa.select(sa.func.count(EventParticipant.id)).where(
+                EventParticipant.event_id == event.id,
+                EventParticipant.user_id == viewer_id,
+            )
+        ) == 1
+
+
+def test_create_event_requires_authentication_and_valid_input(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """미인증 요청과 잘못된 날짜·시간·정원을 저장 전에 거절한다."""
+
+    client, _, viewer_id = api
+
+    assert client.post(
+        "/api/v1/events",
+        json=event_create_payload(),
+    ).status_code == 401
+
+    invalid_cases = (
+        (event_create_payload(dueDate=days(-1).isoformat()), 400),
+        (event_create_payload(dueDate=days(3).isoformat()), 400),
+        (event_create_payload(startAt="21:00:00"), 400),
+        (event_create_payload(capacity=0), 422),
+        (event_create_payload(unexpected="value"), 422),
+    )
+    for payload, expected_status in invalid_cases:
+        response = client.post(
+            "/api/v1/events",
+            headers=auth(viewer_id),
+            json=payload,
+        )
+        assert response.status_code == expected_status
+
+
+def test_public_queries_hide_pending_and_rejected_events(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """심사 중이거나 반려된 행사는 목록과 공개 상세에서 모두 숨긴다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        pending = add_event(
+            db,
+            title="pending",
+            status=EventStatus.PENDING,
+        )
+        rejected = add_event(
+            db,
+            title="rejected",
+            status=EventStatus.REJECTED,
+        )
+        add_event(db, title="approved")
+        add_event(db, title="cancelled", cancel_reason="운영 사정")
+        db.commit()
+        hidden_uuids = (pending.uuid, rejected.uuid)
+
+    response = client.get(
+        "/api/v1/events?regionName=seoul",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 200
+    assert titles(response) == ["approved", "cancelled"]
+    for event_uuid in hidden_uuids:
+        detail = client.get(
+            f"/api/v1/events/{event_uuid}",
+            headers=auth(viewer_id),
+        )
+        assert detail.status_code == 404
 
 
 def test_list_returns_full_dto(
@@ -909,6 +1046,45 @@ def test_cancel_event_removes_participant_and_decrements_counter(
         ) is None
 
 
+def test_host_cannot_cancel_own_participation(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """행사 등록자는 참가 관계만 제거하지 못하고 행사 취소 절차를 사용한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(
+            db,
+            title="hosted-event",
+            host_id=viewer_id,
+        )
+        join(db, event.id, viewer_id)
+        db.commit()
+        event_id = event.id
+        event_uuid = event.uuid
+
+    response = client.delete(
+        f"/api/v1/events/{event_uuid}/participants",
+        headers=auth(viewer_id),
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "HOST_CANNOT_CANCEL_PARTICIPATION",
+        "message": "행사 등록자는 참가 신청을 취소할 수 없습니다.",
+    }
+    with Session(engine) as db:
+        assert db.scalar(
+            sa.select(Event.current_count).where(Event.id == event_id)
+        ) == 1
+        assert db.scalar(
+            sa.select(sa.func.count(EventParticipant.id)).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == viewer_id,
+            )
+        ) == 1
+
+
 def test_cancel_event_requires_authentication(
     api: tuple[TestClient, sa.Engine, int],
 ) -> None:
@@ -1104,7 +1280,8 @@ def test_openapi_event_contract() -> None:
     """문서에 이벤트 경로, 태그, 오류 상태 코드가 노출되는지 확인한다."""
 
     schema = app.openapi()
-    operation = schema["paths"]["/api/v1/events"]["get"]
+    events_path = schema["paths"]["/api/v1/events"]
+    operation = events_path["get"]
 
     assert operation["summary"] == "이벤트 목록 조회"
     assert operation["tags"] == ["이벤트"]
@@ -1112,6 +1289,17 @@ def test_openapi_event_contract() -> None:
         "200",
         "401",
         "404",
+        "422",
+        "500",
+    ]
+
+    create_operation = events_path["post"]
+    assert create_operation["summary"] == "이벤트 등록 신청"
+    assert create_operation["tags"] == ["이벤트"]
+    assert sorted(create_operation["responses"]) == [
+        "201",
+        "400",
+        "401",
         "422",
         "500",
     ]

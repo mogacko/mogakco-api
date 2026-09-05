@@ -12,7 +12,13 @@ from app.schemas.community import (
     LikeResponse,
 )
 from app.schemas.error import ErrorResponse
-from app.schemas.event import EventDetailResponse, EventListItem, EventStatus
+from app.schemas.event import (
+    EventCreateRequest,
+    EventCreateResponse,
+    EventDetailResponse,
+    EventDisplayStatus,
+    EventListItem,
+)
 
 __all__ = [
     "CommentCreateRequest",
@@ -26,8 +32,10 @@ __all__ = [
     "CommunityPostPageResponse",
     "CommunityPostUpdateRequest",
     "ErrorResponse",
+    "EventCreateRequest",
+    "EventCreateResponse",
     "EventDetailResponse",
+    "EventDisplayStatus",
     "EventListItem",
-    "EventStatus",
     "LikeResponse",
 ]

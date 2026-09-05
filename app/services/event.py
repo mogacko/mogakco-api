@@ -1,4 +1,4 @@
-"""이벤트 조회와 참가 신청에 필요한 도메인 로직."""
+"""이벤트 등록, 조회와 참가 신청에 필요한 도메인 로직."""
 
 import logging
 from collections.abc import Iterator, Mapping
@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from redis import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
@@ -21,8 +21,13 @@ from app.exceptions import (
     NotFoundError,
     TooManyRequestsError,
 )
-from app.models import Event, EventParticipant
-from app.schemas import EventDetailResponse, EventListItem, EventStatus
+from app.models import Event, EventParticipant, EventStatus, User
+from app.schemas import (
+    EventCreateRequest,
+    EventDetailResponse,
+    EventDisplayStatus,
+    EventListItem,
+)
 from app.time import kst_now
 
 logger = logging.getLogger(__name__)
@@ -70,12 +75,16 @@ def select_events_with_stats(current_user_id: int) -> Select:
             Event.price,
             Event.capacity,
             Event.current_count,
+            Event.status,
             Event.cancel_reason,
             Event.post_image_url,
             is_participating,
         )
         # 삭제된 이벤트는 모든 목록 조회에서 공통으로 제외한다.
-        .where(Event.deleted_at.is_(None))
+        .where(
+            Event.deleted_at.is_(None),
+            Event.status.in_((EventStatus.APPROVED, EventStatus.CANCEL)),
+        )
     )
 
 
@@ -85,22 +94,65 @@ def is_event_expired(event_date: date) -> bool:
     return event_date < kst_now().date()
 
 
-def event_status(row: Mapping[str, Any]) -> EventStatus:
+def event_status(row: Mapping[str, Any]) -> EventDisplayStatus:
     """조회 행을 API 상태로 변환한다.
 
     우선순위는 취소 > 행사 종료 > 본인 참가 > 정원 마감 > 모집 중이다.
     따라서 종료된 행사는 참가 여부와 관계없이 EXPIRED로 반환한다.
     """
 
-    if row["cancel_reason"] is not None:
-        return EventStatus.CANCEL
+    if row["status"] is EventStatus.CANCEL:
+        return EventDisplayStatus.CANCEL
     if is_event_expired(row["date"]):
-        return EventStatus.EXPIRED
+        return EventDisplayStatus.EXPIRED
     if row["is_participating"]:
-        return EventStatus.PARTICIPATING
+        return EventDisplayStatus.PARTICIPATING
     if row["current_count"] >= row["capacity"]:
-        return EventStatus.FULL
-    return EventStatus.OPEN
+        return EventDisplayStatus.FULL
+    return EventDisplayStatus.OPEN
+
+
+def register_event(
+    db: Session,
+    request: EventCreateRequest,
+    current_user: User,
+) -> Event:
+    """행사와 호스트 참가 관계를 하나의 트랜잭션으로 등록한다."""
+
+    today = kst_now().date()
+    if request.dueDate < today or request.dueDate >= request.date:
+        raise BadRequestError(
+            "INVALID_EVENT_DATE",
+            "신청 마감일은 오늘부터 행사 날짜 이전이어야 합니다.",
+        )
+    if request.startAt >= request.endAt:
+        raise BadRequestError(
+            "INVALID_EVENT_TIME",
+            "행사 종료 시간은 시작 시간보다 늦어야 합니다.",
+        )
+
+    event = Event(
+        region_id=current_user.region_id,
+        host_id=current_user.id,
+        status=EventStatus.PENDING,
+        category=request.categoryName,
+        title=request.title,
+        description=request.description,
+        place=request.place,
+        date=request.date,
+        due_date=request.dueDate,
+        start_at=request.startAt,
+        end_at=request.endAt,
+        price=request.price,
+        capacity=request.capacity,
+        current_count=1,
+        post_image_url=request.postImageUrl,
+    )
+    db.add(event)
+    db.flush()
+    db.add(EventParticipant(event_id=event.id, user_id=current_user.id))
+    db.commit()
+    return event
 
 
 def event_list_item_from_row(row: Mapping[str, Any]) -> EventListItem:
@@ -189,7 +241,7 @@ def _raise_event_application_error(
     event = db.execute(
         select(
             Event.id,
-            Event.cancel_reason,
+            Event.status,
             Event.due_date,
             Event.current_count,
             Event.capacity,
@@ -198,7 +250,7 @@ def _raise_event_application_error(
             Event.deleted_at.is_(None),
         )
     ).one_or_none()
-    if event is None or event.cancel_reason is not None:
+    if event is None or event.status is not EventStatus.APPROVED:
         raise NotFoundError(
             "EVENT_NOT_FOUND",
             "존재하지 않거나 취소된 행사입니다.",
@@ -228,7 +280,7 @@ def apply_to_event(db: Session, event_uuid: UUID, user_id: int) -> None:
         .where(
             Event.uuid == event_uuid,
             Event.deleted_at.is_(None),
-            Event.cancel_reason.is_(None),
+            Event.status == EventStatus.APPROVED,
             Event.due_date >= kst_now().date(),
             Event.current_count < Event.capacity,
         )
@@ -270,16 +322,22 @@ def _raise_event_cancellation_error(
         select(
             Event.id,
             Event.date,
-            Event.cancel_reason,
+            Event.host_id,
+            Event.status,
             Event.deleted_at,
         ).where(Event.uuid == event_uuid)
     ).one_or_none()
     if (
         event is None
         or event.deleted_at is not None
-        or event.cancel_reason is not None
+        or event.status is not EventStatus.APPROVED
     ):
         raise NotFoundError("EVENT_NOT_FOUND", "존재하지 않는 행사입니다.")
+    if event.host_id == user_id:
+        raise BadRequestError(
+            "HOST_CANNOT_CANCEL_PARTICIPATION",
+            "행사 등록자는 참가 신청을 취소할 수 없습니다.",
+        )
     if db.scalar(
         select(EventParticipant.id).where(
             EventParticipant.event_id == event.id,
@@ -310,7 +368,8 @@ def cancel_event_application(
         .where(
             Event.uuid == event_uuid,
             Event.deleted_at.is_(None),
-            Event.cancel_reason.is_(None),
+            Event.status == EventStatus.APPROVED,
+            or_(Event.host_id.is_(None), Event.host_id != user_id),
             Event.date >= kst_now().date(),
         )
         .scalar_subquery()

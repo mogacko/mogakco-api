@@ -1,4 +1,4 @@
-"""이벤트 목록 및 상세 조회 HTTP 엔드포인트."""
+"""이벤트 등록, 조회 및 참가 HTTP 엔드포인트."""
 
 from datetime import timedelta
 from typing import Annotated
@@ -13,7 +13,12 @@ from app.dependencies import get_current_user
 from app.exceptions import NotFoundError
 from app.models import Event, EventCategory, User
 from app.redis_client import get_redis_client
-from app.schemas import EventDetailResponse, EventListItem
+from app.schemas import (
+    EventCreateRequest,
+    EventCreateResponse,
+    EventDetailResponse,
+    EventListItem,
+)
 from app.schemas.error import error_responses
 from app.services.event import (
     apply_to_event,
@@ -21,6 +26,7 @@ from app.services.event import (
     event_detail_from_row,
     event_list_item_from_row,
     event_participation_lock,
+    register_event,
     select_events_with_stats,
 )
 from app.services.region import enabled_region
@@ -30,6 +36,27 @@ router = APIRouter(prefix="/api/v1", tags=["이벤트"])
 
 # 지난 행사는 종료 후 7일까지만 목록에 남기고, 예정된 행사는 전부 보여준다.
 PAST_EVENT_RETENTION_DAYS = 7
+
+
+@router.post(
+    "/events",
+    status_code=status.HTTP_201_CREATED,
+    response_model=EventCreateResponse,
+    responses=error_responses(400, 401, 422, 500),
+    summary="이벤트 등록 신청",
+)
+def create_event(
+    request: EventCreateRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> EventCreateResponse:
+    """현재 사용자를 호스트이자 첫 참가자로 포함한 승인 대기 행사를 만든다."""
+
+    event = register_event(db, request, current_user)
+    return EventCreateResponse(
+        eventUuid=event.uuid,
+        message="행사가 성공적으로 등록되었습니다.",
+    )
 
 
 @router.get(

@@ -36,11 +36,20 @@ class EventCategory(StrEnum):
     OTHER = "OTHER"
 
 
+class EventStatus(StrEnum):
+    """DB에 저장하는 이벤트의 심사 및 취소 상태."""
+
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    CANCEL = "CANCEL"
+
+
 class Event(Base):
-    """지역별 이벤트의 일정, 장소, 모집 정보와 취소 상태를 저장한다.
+    """지역별 이벤트의 일정, 장소, 등록자와 심사 상태를 저장한다.
 
     레코드는 실제로 삭제하지 않고 ``deleted_at``을 채우는 소프트 삭제 방식을
-    사용한다. ``cancel_reason``이 있으면 별도 상태 컬럼 없이 취소 이벤트로 본다.
+    사용한다. 승인된 행사의 취소는 ``status``와 ``cancel_reason``으로 나타낸다.
     """
 
     __tablename__ = "events"
@@ -55,6 +64,10 @@ class Event(Base):
             "current_count >= 0 AND current_count <= capacity",
             name="ck_events_current_count_range",
         ),
+        CheckConstraint(
+            "status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCEL')",
+            name="ck_events_status",
+        ),
         Index(
             "ix_events_region_category_date",
             "region_id",
@@ -62,6 +75,7 @@ class Event(Base):
             "date",
         ),
         Index("ix_events_region_date", "region_id", "date"),
+        Index("ix_events_host_id", "host_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -72,6 +86,20 @@ class Event(Base):
         server_default=text("gen_random_uuid()"),
     )
     region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
+    # 기존 행사는 등록자를 역추적할 수 없으므로 마이그레이션 이후에도 NULL을 허용한다.
+    host_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    status: Mapped[EventStatus] = mapped_column(
+        Enum(
+            EventStatus,
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        default=EventStatus.PENDING,
+        server_default=text("'PENDING'"),
+    )
     category: Mapped[EventCategory] = mapped_column(
         Enum(
             EventCategory,
