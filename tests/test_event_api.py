@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.database import create_db_engine, get_db
 from app.exceptions import BadRequestException, ConflictException
+from app.jobs.event_lifecycle import seconds_until_next_run
 from app.main import app
 from app.models import (
     Comment,
@@ -31,8 +32,12 @@ from app.models import (
 )
 from app.routers.event import PAST_EVENT_RETENTION_DAYS
 from app.redis_client import get_redis_client
-from app.services.event import apply_to_event, cancel_event_application
-from app.time import kst_now
+from app.services.event import (
+    advance_event_lifecycle,
+    apply_to_event,
+    cancel_event_application,
+)
+from app.time import KST, kst_now
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 _DEBUG_USER_UUIDS: dict[int, UUID] = {}
@@ -121,7 +126,8 @@ def api(
         db.execute(sa.delete(CommunityPost))
         db.execute(sa.delete(User))
         viewer = User(nickname="event-viewer", region_id=1)
-        db.add(viewer)
+        host = User(nickname="event-host", region_id=1)
+        db.add_all([viewer, host])
         db.commit()
         viewer_id = viewer.id
         _DEBUG_USER_UUIDS[viewer_id] = viewer.uuid
@@ -183,9 +189,12 @@ def add_event(
         if cancel_reason is not None
         else EventStatus.APPROVED
     )
+    stored_host_id = host_id if host_id is not None else db.scalar(
+        sa.select(User.id).where(User.nickname == "event-host")
+    )
     event = Event(
         region_id=region_id,
-        host_id=host_id,
+        host_id=stored_host_id,
         status=stored_status,
         category=category,
         title=title,
@@ -391,6 +400,7 @@ def test_public_queries_hide_pending_and_rejected_events(
             status=EventStatus.REJECTED,
         )
         add_event(db, title="approved")
+        add_event(db, title="completed", status=EventStatus.COMPLETED)
         add_event(db, title="cancelled", cancel_reason="운영 사정")
         db.commit()
         hidden_uuids = (pending.uuid, rejected.uuid)
@@ -401,7 +411,7 @@ def test_public_queries_hide_pending_and_rejected_events(
     )
 
     assert response.status_code == 200
-    assert titles(response) == ["approved", "cancelled"]
+    assert titles(response) == ["approved", "completed", "cancelled"]
     for event_uuid in hidden_uuids:
         detail = client.get(
             f"/api/v1/events/{event_uuid}",
@@ -474,6 +484,13 @@ def test_status_reflects_capacity_participation_and_cancellation(
             due_date=days(-2),
         )
 
+        add_event(
+            db,
+            title="completed",
+            on=days(0),
+            status=EventStatus.COMPLETED,
+        )
+
         full = add_event(db, title="full", on=days(2), capacity=1)
         stranger = User(nickname="stranger", region_id=1)
         db.add(stranger)
@@ -513,6 +530,7 @@ def test_status_reflects_capacity_participation_and_cancellation(
     assert response.status_code == 200
     assert [(item["title"], item["status"]) for item in response.json()] == [
         ("expired", "EXPIRED"),
+        ("completed", "EXPIRED"),
         ("open", "OPEN"),
         ("full", "FULL"),
         ("mine", "PARTICIPATING"),
@@ -524,6 +542,108 @@ def test_status_reflects_capacity_participation_and_cancellation(
         item for item in response.json() if item["title"] == "cancelled"
     )
     assert cancelled_item["cancelReason"] == "강사 사정으로 취소되었습니다."
+
+
+def test_advance_event_lifecycle_uses_event_times(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """종료된 승인 행사는 완료하고 시작된 대기 행사는 거절한다."""
+
+    _, engine, _ = api
+    now = datetime(2026, 9, 7, 3, tzinfo=KST)
+    with Session(engine, expire_on_commit=False) as db:
+        completed = add_event(
+            db,
+            title="completed-by-job",
+            on=now.date(),
+            start_at=time(1),
+            end_at=time(2),
+        )
+        rejected = add_event(
+            db,
+            title="rejected-by-job",
+            on=now.date(),
+            start_at=time(3),
+            status=EventStatus.PENDING,
+        )
+        active = add_event(
+            db,
+            title="still-active",
+            on=now.date(),
+            start_at=time(3, 1),
+            end_at=time(4),
+        )
+        db.commit()
+
+        assert advance_event_lifecycle(db, now) == 2
+        assert completed.status is EventStatus.COMPLETED
+        assert rejected.status is EventStatus.REJECTED
+        assert active.status is EventStatus.APPROVED
+        assert advance_event_lifecycle(db, now) == 0
+
+
+def test_active_event_requires_host(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """활성 이벤트만 호스트 NULL을 DB 제약으로 거절한다."""
+
+    _, engine, _ = api
+    with Session(engine) as db:
+        active = add_event(db, title="host-required")
+        active.host_id = None
+        with pytest.raises(sa.exc.IntegrityError):
+            db.commit()
+        db.rollback()
+
+        completed = add_event(
+            db,
+            title="host-optional",
+            status=EventStatus.COMPLETED,
+        )
+        completed.host_id = None
+        db.commit()
+
+
+def test_participation_prevents_physical_user_deletion(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """참가 이력이 남은 사용자는 물리 삭제해 카운터를 깨뜨릴 수 없다."""
+
+    _, engine, _ = api
+    with Session(engine, expire_on_commit=False) as db:
+        participant = User(nickname="protected-participant", region_id=1)
+        db.add(participant)
+        db.flush()
+        event = add_event(db, title="protected-participation")
+        join(db, event.id, participant.id)
+        db.commit()
+        event_id = event.id
+        participant_id = participant.id
+
+        db.delete(participant)
+        with pytest.raises(sa.exc.IntegrityError):
+            db.commit()
+        db.rollback()
+
+        assert db.get(User, participant_id) is not None
+        assert db.scalar(
+            sa.select(Event.current_count).where(Event.id == event_id)
+        ) == 1
+        assert db.scalar(
+            sa.select(EventParticipant.id).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == participant_id,
+            )
+        ) is not None
+
+
+def test_event_lifecycle_job_runs_daily_at_0300_kst() -> None:
+    assert seconds_until_next_run(
+        datetime(2026, 9, 7, 2, tzinfo=KST)
+    ) == 3_600
+    assert seconds_until_next_run(
+        datetime(2026, 9, 7, 3, tzinfo=KST)
+    ) == 86_400
 
 
 def test_list_orders_by_date_then_start_time(
@@ -1084,16 +1204,20 @@ def test_atomic_counter_allows_only_one_user_into_last_seat(
 
 def test_cancel_event_removes_participant_and_decrements_counter(
     api: tuple[TestClient, sa.Engine, int],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """행사 당일까지 참가 신청을 취소하고 카운터를 함께 감소시킨다."""
+    """행사 시작 정확히 2시간 전에는 취소와 카운터 감소를 허용한다."""
 
     client, engine, viewer_id = api
+    now = datetime(2026, 9, 6, 10, tzinfo=KST)
+    monkeypatch.setattr("app.services.event.kst_now", lambda: now)
     with Session(engine, expire_on_commit=False) as db:
         event = add_event(
             db,
             title="cancel-application",
-            on=days(0),
-            due_date=days(-1),
+            on=now.date(),
+            due_date=now.date() - timedelta(days=1),
+            start_at=time(12),
         )
         join(db, event.id, viewer_id)
         db.commit()
@@ -1269,12 +1393,20 @@ def test_cancel_event_rejects_missing_application(
 
 def test_cancel_event_rejects_expired_event_without_mutation(
     api: tuple[TestClient, sa.Engine, int],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """행사 날짜가 지난 신청은 취소하거나 카운터를 감소시키지 않는다."""
+    """취소 기한을 1초 넘기면 신청과 카운터를 변경하지 않는다."""
 
     client, engine, viewer_id = api
+    now = datetime(2026, 9, 6, 10, tzinfo=KST)
+    monkeypatch.setattr("app.services.event.kst_now", lambda: now)
     with Session(engine, expire_on_commit=False) as db:
-        event = add_event(db, title="expired-cancel", on=days(-1))
+        event = add_event(
+            db,
+            title="expired-cancel",
+            on=now.date(),
+            start_at=time(11, 59, 59),
+        )
         join(db, event.id, viewer_id)
         db.commit()
         event_id = event.id

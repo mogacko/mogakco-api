@@ -17,7 +17,7 @@ class EventDisplayStatus(StrEnum):
     FULL = "FULL"
     CANCEL = "CANCEL"
     PARTICIPATING = "PARTICIPATING"
-    # 행사 날짜가 지난 이벤트는 DB 갱신 없이 EXPIRED로 계산한다.
+    # 저장된 완료 상태와 아직 갱신되지 않은 지난 이벤트를 EXPIRED로 보여준다.
     EXPIRED = "EXPIRED"
 
 

@@ -39,10 +39,11 @@ class EventCategory(StrEnum):
 
 
 class EventStatus(StrEnum):
-    """DB에 저장하는 이벤트의 심사 및 취소 상태."""
+    """DB에 저장하는 이벤트의 심사 및 생명주기 상태."""
 
     PENDING = "PENDING"
     APPROVED = "APPROVED"
+    COMPLETED = "COMPLETED"
     REJECTED = "REJECTED"
     CANCEL = "CANCEL"
 
@@ -67,8 +68,14 @@ class Event(Base):
             name="ck_events_current_count_range",
         ),
         CheckConstraint(
-            "status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCEL')",
+            "status IN "
+            "('PENDING', 'APPROVED', 'COMPLETED', 'REJECTED', 'CANCEL')",
             name="ck_events_status",
+        ),
+        CheckConstraint(
+            "host_id IS NOT NULL "
+            "OR status IN ('COMPLETED', 'REJECTED', 'CANCEL')",
+            name="ck_events_active_host_required",
         ),
         Index(
             "ix_events_region_category_date",
@@ -88,7 +95,7 @@ class Event(Base):
         server_default=text("gen_random_uuid()"),
     )
     region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
-    # 기존 행사는 등록자를 역추적할 수 없으므로 마이그레이션 이후에도 NULL을 허용한다.
+    # 사용자 정보가 영구 삭제된 종료 이벤트의 이력을 보존하기 위해 NULL을 허용한다.
     host_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
@@ -161,7 +168,7 @@ class EventParticipant(Base):
         ForeignKey("events.id", ondelete="CASCADE")
     )
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE")
+        ForeignKey("users.id", ondelete="RESTRICT")
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=kst_now, server_default=func.now()
