@@ -7,8 +7,10 @@ from fastapi import Depends, Header
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.errors import AuthErrors
+from app.common.errors import CommonErrors
 from app.database import get_db
-from app.exceptions import AuthenticationError, ConfigurationError
+from app.exceptions import AuthenticationException, InternalServerException
 from app.models import User
 
 LOCAL_ENVIRONMENTS = {"local", "development", "test"}
@@ -33,7 +35,7 @@ def get_current_user(
     ] = None,
 ) -> User:
     if not debug_auth_enabled():
-        raise AuthenticationError()
+        raise AuthenticationException(AuthErrors.REQUIRED)
 
     header_provided = debug_user_uuid is not None
     raw_uuid = (
@@ -42,15 +44,15 @@ def get_current_user(
         else os.getenv("DEBUG_DEFAULT_USER_UUID")
     )
     if not raw_uuid:
-        raise AuthenticationError()
+        raise AuthenticationException(AuthErrors.REQUIRED)
 
     try:
         user_uuid = UUID(raw_uuid)
     except ValueError:
         if header_provided:
-            raise AuthenticationError() from None
+            raise AuthenticationException(AuthErrors.REQUIRED) from None
         logger.error("Invalid DEBUG_DEFAULT_USER_UUID configuration")
-        raise ConfigurationError() from None
+        raise InternalServerException(CommonErrors.CONFIGURATION_ERROR) from None
 
     user = db.scalar(
         select(User).where(
@@ -59,5 +61,5 @@ def get_current_user(
         )
     )
     if user is None:
-        raise AuthenticationError()
+        raise AuthenticationException(AuthErrors.REQUIRED)
     return user

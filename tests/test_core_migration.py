@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.database import create_db_engine
 from app.models import User
-from app.services.community import get_region_by_name
+from app.exceptions import NotFoundException
+from app.services.region import enabled_region
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -61,11 +62,12 @@ def test_initial_migration_creates_final_core_schema() -> None:
     }
 
     with Session(engine) as session:
-        region = get_region_by_name(session, "busan")
-        assert region is not None
+        region = enabled_region(session, "busan")
         assert region.name == "busan"
         assert region.is_enabled is True
-        assert get_region_by_name(session, "서울") is None
+        with pytest.raises(NotFoundException) as error:
+            enabled_region(session, "서울")
+        assert error.value.code == "REGION_NOT_FOUND"
 
     with engine.begin() as connection:
         connection.execute(

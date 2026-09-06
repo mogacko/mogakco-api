@@ -8,6 +8,8 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import Select
 
+from app.community.errors import CommunityErrors
+from app.exceptions import DomainValidationException
 from app.models import (
     Comment,
     CommentTargetType,
@@ -31,13 +33,17 @@ def validate_community_post_category(
     category: CommunityPostCategory | None,
 ) -> None:
     if board is CommunityPostBoard.TALK and category is None:
-        raise ValueError("talk community posts require a category")
+        raise DomainValidationException(CommunityErrors.INVALID_MENU)
     if board is not CommunityPostBoard.TALK and category is not None:
-        raise ValueError("only talk community posts accept a category")
+        raise DomainValidationException(CommunityErrors.INVALID_MENU)
 
 
-def get_region_by_name(db: Session, region_name: str) -> Region | None:
-    return db.scalar(select(Region).where(Region.name == region_name))
+def validate_community_post_filter(
+    board: CommunityPostBoard,
+    category: CommunityPostCategory | None,
+) -> None:
+    if category is not None and board is not CommunityPostBoard.TALK:
+        raise DomainValidationException(CommunityErrors.INVALID_MENU)
 
 
 def select_community_posts_with_stats() -> Select:

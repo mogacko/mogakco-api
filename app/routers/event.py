@@ -10,11 +10,15 @@ from redis import Redis
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.auth.errors import AuthErrors
+from app.common.errors import CommonErrors
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.exceptions import NotFoundError
+from app.event.errors import EventErrors
+from app.exceptions import NotFoundException
 from app.models import Event, EventCategory, User
 from app.redis_client import get_redis_client
+from app.region.errors import RegionErrors
 from app.schemas import (
     EventCreateRequest,
     EventCreateResponse,
@@ -36,6 +40,12 @@ from app.time import kst_now
 
 router = APIRouter(prefix="/api/v1", tags=["이벤트"])
 
+_COMMON_ERRORS = (
+    AuthErrors.REQUIRED,
+    CommonErrors.INVALID_REQUEST,
+    CommonErrors.INTERNAL_SERVER_ERROR,
+)
+
 # 지난 행사는 종료 후 7일까지만 목록에 남기고, 예정된 행사는 전부 보여준다.
 PAST_EVENT_RETENTION_DAYS = 7
 
@@ -44,7 +54,11 @@ PAST_EVENT_RETENTION_DAYS = 7
     "/events",
     status_code=status.HTTP_201_CREATED,
     response_model=EventCreateResponse,
-    responses=error_responses(400, 401, 422, 500),
+    responses=error_responses(
+        *_COMMON_ERRORS,
+        EventErrors.INVALID_DATE,
+        EventErrors.INVALID_TIME,
+    ),
     summary="이벤트 등록 신청",
 )
 def create_event(
@@ -64,7 +78,7 @@ def create_event(
 @router.get(
     "/events",
     response_model=list[EventListItem],
-    responses=error_responses(401, 404, 422, 500),
+    responses=error_responses(*_COMMON_ERRORS, RegionErrors.NOT_FOUND),
     summary="이벤트 목록 조회",
 )
 def list_events(
@@ -106,7 +120,7 @@ def list_events(
 @router.get(
     "/events/{eventUuid}",
     response_model=EventDetailResponse,
-    responses=error_responses(401, 404, 422, 500),
+    responses=error_responses(*_COMMON_ERRORS, EventErrors.NOT_FOUND),
     summary="이벤트 상세 조회",
 )
 def get_event_detail(
@@ -138,7 +152,7 @@ def get_event_detail(
         .where(Event.uuid == eventUuid)
     ).mappings().one_or_none()
     if row is None:
-        raise NotFoundError("EVENT_NOT_FOUND", "이벤트를 찾을 수 없습니다.")
+        raise NotFoundException(EventErrors.NOT_FOUND)
     return event_detail_from_row(row)
 
 
@@ -146,7 +160,14 @@ def get_event_detail(
     "/events/{eventUuid}/participants",
     status_code=status.HTTP_200_OK,
     response_class=Response,
-    responses=error_responses(400, 401, 404, 409, 422, 429, 500),
+    responses=error_responses(
+        *_COMMON_ERRORS,
+        EventErrors.NOT_FOUND,
+        EventErrors.CLOSED,
+        EventErrors.ALREADY_APPLIED,
+        EventErrors.FULL,
+        EventErrors.PARTICIPATION_BUSY,
+    ),
     summary="이벤트 참가 신청",
 )
 def apply_event(
@@ -166,7 +187,14 @@ def apply_event(
     "/events/{eventUuid}/participants",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    responses=error_responses(400, 401, 404, 422, 429, 500),
+    responses=error_responses(
+        *_COMMON_ERRORS,
+        EventErrors.NOT_FOUND,
+        EventErrors.HOST_CANNOT_CANCEL_PARTICIPATION,
+        EventErrors.APPLICATION_NOT_FOUND,
+        EventErrors.CANCEL_PERIOD_EXPIRED,
+        EventErrors.PARTICIPATION_BUSY,
+    ),
     summary="이벤트 참가 신청 취소",
 )
 def cancel_event(

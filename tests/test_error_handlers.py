@@ -52,6 +52,7 @@ def test_framework_404_405_and_validation_use_error_envelope() -> None:
         "code": "METHOD_NOT_ALLOWED",
         "message": "허용되지 않은 요청 방식입니다.",
     }
+    assert unsupported.headers["allow"] == "GET"
     assert invalid.status_code == 422
     assert invalid.json() == {
         "code": "INVALID_REQUEST",

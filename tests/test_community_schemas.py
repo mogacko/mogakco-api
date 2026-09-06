@@ -228,19 +228,6 @@ def test_request_schemas_preserve_raw_text_and_enforce_contract() -> None:
         )
     with pytest.raises(ValidationError):
         CommunityPostCreateRequest(
-            boardName="talk",
-            title="제목",
-            body="본문",
-        )
-    with pytest.raises(ValidationError):
-        CommunityPostCreateRequest(
-            boardName="question",
-            categoryName="free",
-            title="제목",
-            body="본문",
-        )
-    with pytest.raises(ValidationError):
-        CommunityPostCreateRequest(
             boardName="question",
             title="x" * 26,
             body="본문",

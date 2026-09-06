@@ -16,11 +16,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
+from app.event.errors import EventErrors
 from app.exceptions import (
-    BadRequestError,
-    ConflictError,
-    NotFoundError,
-    TooManyRequestsError,
+    BadRequestException,
+    ConflictException,
+    NotFoundException,
+    TooManyRequestsException,
 )
 from app.models import Event, EventParticipant, EventStatus, User
 from app.schemas import (
@@ -122,15 +123,9 @@ def register_event(
 
     today = kst_now().date()
     if request.dueDate < today or request.dueDate >= request.date:
-        raise BadRequestError(
-            "INVALID_EVENT_DATE",
-            "신청 마감일은 오늘부터 행사 날짜 이전이어야 합니다.",
-        )
+        raise BadRequestException(EventErrors.INVALID_DATE)
     if request.startAt >= request.endAt:
-        raise BadRequestError(
-            "INVALID_EVENT_TIME",
-            "행사 종료 시간은 시작 시간보다 늦어야 합니다.",
-        )
+        raise BadRequestException(EventErrors.INVALID_TIME)
 
     event = Event(
         region_id=current_user.region_id,
@@ -220,10 +215,7 @@ def event_participation_lock(
             if attempt + 1 < EVENT_PARTICIPATION_LOCK_ATTEMPTS:
                 sleep(EVENT_PARTICIPATION_LOCK_RETRY_SECONDS)
         else:
-            raise TooManyRequestsError(
-                "EVENT_PARTICIPATION_BUSY",
-                "참가 요청이 많습니다. 잠시 후 다시 시도해주세요.",
-            )
+            raise TooManyRequestsException(EventErrors.PARTICIPATION_BUSY)
     except RedisError:
         logger.warning(
             "Redis event participation lock failed; using DB safeguards",
@@ -264,24 +256,18 @@ def _raise_event_application_error(
         )
     ).one_or_none()
     if event is None or event.status is not EventStatus.APPROVED:
-        raise NotFoundError(
-            "EVENT_NOT_FOUND",
-            "존재하지 않거나 취소된 행사입니다.",
-        )
+        raise NotFoundException(EventErrors.NOT_FOUND)
     if db.scalar(
         select(EventParticipant.id).where(
             EventParticipant.event_id == event.id,
             EventParticipant.user_id == user_id,
         )
     ) is not None:
-        raise ConflictError("ALREADY_APPLIED", "이미 신청한 행사입니다.")
+        raise ConflictException(EventErrors.ALREADY_APPLIED)
     if event.due_date < kst_now().date():
-        raise BadRequestError("EVENT_CLOSED", "모집 기간이 종료되었습니다.")
+        raise BadRequestException(EventErrors.CLOSED)
     if event.current_count >= event.capacity:
-        raise ConflictError(
-            "EVENT_FULL",
-            "정원이 마감되어 신청할 수 없습니다.",
-        )
+        raise ConflictException(EventErrors.FULL)
     raise RuntimeError("Event application update failed unexpectedly")
 
 
@@ -317,10 +303,7 @@ def apply_to_event(db: Session, event_uuid: UUID, user_id: int) -> None:
             )
         )
         if already_applied is not None:
-            raise ConflictError(
-                "ALREADY_APPLIED",
-                "이미 신청한 행사입니다.",
-            ) from error
+            raise ConflictException(EventErrors.ALREADY_APPLIED) from error
         raise
 
 
@@ -345,11 +328,10 @@ def _raise_event_cancellation_error(
         or event.deleted_at is not None
         or event.status is not EventStatus.APPROVED
     ):
-        raise NotFoundError("EVENT_NOT_FOUND", "존재하지 않는 행사입니다.")
+        raise NotFoundException(EventErrors.NOT_FOUND)
     if event.host_id == user_id:
-        raise BadRequestError(
-            "HOST_CANNOT_CANCEL_PARTICIPATION",
-            "행사 등록자는 참가 신청을 취소할 수 없습니다.",
+        raise BadRequestException(
+            EventErrors.HOST_CANNOT_CANCEL_PARTICIPATION
         )
     if db.scalar(
         select(EventParticipant.id).where(
@@ -357,15 +339,9 @@ def _raise_event_cancellation_error(
             EventParticipant.user_id == user_id,
         )
     ) is None:
-        raise BadRequestError(
-            "APPLICATION_NOT_FOUND",
-            "신청 내역이 존재하지 않거나 이미 취소되었습니다.",
-        )
+        raise BadRequestException(EventErrors.APPLICATION_NOT_FOUND)
     if is_event_expired(event.date):
-        raise BadRequestError(
-            "CANCEL_PERIOD_EXPIRED",
-            "취소 가능 기간이 지났습니다.",
-        )
+        raise BadRequestException(EventErrors.CANCEL_PERIOD_EXPIRED)
     raise RuntimeError("Event cancellation delete failed unexpectedly")
 
 

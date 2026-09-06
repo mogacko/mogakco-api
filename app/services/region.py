@@ -3,8 +3,9 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.exceptions import NotFoundError
+from app.exceptions import NotFoundException
 from app.models import Region
+from app.region.errors import RegionErrors
 
 
 def enabled_region(db: Session, region_name: str) -> Region:
@@ -16,5 +17,5 @@ def enabled_region(db: Session, region_name: str) -> Region:
 
     region = db.scalar(select(Region).where(Region.name == region_name))
     if region is None or not region.is_enabled:
-        raise NotFoundError("REGION_NOT_FOUND", "지역을 찾을 수 없습니다.")
+        raise NotFoundException(RegionErrors.NOT_FOUND)
     return region

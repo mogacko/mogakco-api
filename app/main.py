@@ -5,6 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.common.errors import CommonErrors
 from app.exceptions import AppException
 from app.routers.community import router as community_router
 from app.routers.event import router as event_router
@@ -32,12 +33,10 @@ async def validation_exception_response(
     _request: Request,
     _error: RequestValidationError,
 ) -> JSONResponse:
+    error = CommonErrors.INVALID_REQUEST
     return JSONResponse(
-        status_code=422,
-        content={
-            "code": "INVALID_REQUEST",
-            "message": "요청값이 올바르지 않습니다.",
-        },
+        status_code=error.status_code,
+        content={"code": error.code, "message": error.message},
     )
 
 
@@ -46,12 +45,19 @@ async def framework_http_exception_response(
     _request: Request,
     error: StarletteHTTPException,
 ) -> JSONResponse:
-    code, message = {
-        404: ("NOT_FOUND", "요청한 경로를 찾을 수 없습니다."),
-        405: ("METHOD_NOT_ALLOWED", "허용되지 않은 요청 방식입니다."),
-    }.get(
-        error.status_code,
-        ("HTTP_ERROR", "요청을 처리할 수 없습니다."),
+    fixed_error = {
+        404: CommonErrors.NOT_FOUND,
+        405: CommonErrors.METHOD_NOT_ALLOWED,
+    }.get(error.status_code)
+    code = (
+        fixed_error.code
+        if fixed_error is not None
+        else CommonErrors.HTTP_ERROR_CODE
+    )
+    message = (
+        fixed_error.message
+        if fixed_error is not None
+        else CommonErrors.HTTP_ERROR_MESSAGE
     )
     return JSONResponse(
         status_code=error.status_code,
@@ -69,10 +75,11 @@ async def unexpected_exception_response(
         "Unhandled exception while processing request",
         exc_info=(type(error), error, error.__traceback__),
     )
+    internal_error = CommonErrors.INTERNAL_SERVER_ERROR
     return JSONResponse(
-        status_code=500,
+        status_code=internal_error.status_code,
         content={
-            "code": "INTERNAL_SERVER_ERROR",
-            "message": "서버 오류가 발생했습니다.",
+            "code": internal_error.code,
+            "message": internal_error.message,
         },
     )

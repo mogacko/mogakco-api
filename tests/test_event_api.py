@@ -18,7 +18,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
 
 from app.database import create_db_engine, get_db
-from app.exceptions import BadRequestError, ConflictError
+from app.exceptions import BadRequestException, ConflictException
 from app.main import app
 from app.models import (
     Comment,
@@ -900,7 +900,7 @@ def test_unique_constraint_rolls_back_concurrent_duplicate_counter(
             barrier.wait()
             try:
                 apply_to_event(db, event_uuid, viewer_id)
-            except ConflictError as error:
+            except ConflictException as error:
                 return error.code
             return "OK"
 
@@ -991,7 +991,7 @@ def test_apply_event_hides_missing_deleted_and_cancelled_events(
         assert response.status_code == 404
         assert response.json() == {
             "code": "EVENT_NOT_FOUND",
-            "message": "존재하지 않거나 취소된 행사입니다.",
+            "message": "이벤트를 찾을 수 없습니다.",
         }
 
 
@@ -1063,7 +1063,7 @@ def test_atomic_counter_allows_only_one_user_into_last_seat(
             barrier.wait()
             try:
                 apply_to_event(db, event_uuid, user_id)
-            except ConflictError as error:
+            except ConflictException as error:
                 return error.code
             return "OK"
 
@@ -1240,7 +1240,7 @@ def test_cancel_event_hides_missing_deleted_and_cancelled_events(
         assert response.status_code == 404
         assert response.json() == {
             "code": "EVENT_NOT_FOUND",
-            "message": "존재하지 않는 행사입니다.",
+            "message": "이벤트를 찾을 수 없습니다.",
         }
 
 
@@ -1370,7 +1370,7 @@ def test_concurrent_cancellation_decrements_counter_only_once(
             barrier.wait()
             try:
                 cancel_event_application(db, event_uuid, viewer_id)
-            except BadRequestError as error:
+            except BadRequestException as error:
                 return error.code
             return "OK"
 
