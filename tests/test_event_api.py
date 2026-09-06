@@ -26,6 +26,8 @@ from app.models import (
     CommunityPost,
     Event,
     EventCategory,
+    EventEditRequest,
+    EventEditRequestStatus,
     EventParticipant,
     EventStatus,
     User,
@@ -1521,6 +1523,274 @@ def test_concurrent_cancellation_decrements_counter_only_once(
         ) == 0
 
 
+def test_owned_events_returns_all_stored_statuses_in_latest_order(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """내 행사는 공개 상태 계산 없이 저장 상태와 생성 시각을 반환한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        older = add_event(
+            db,
+            title="older",
+            host_id=viewer_id,
+            status=EventStatus.PENDING,
+        )
+        older.created_at = datetime(2026, 9, 6, 10, tzinfo=KST)
+        newer = add_event(
+            db,
+            title="newer",
+            host_id=viewer_id,
+            status=EventStatus.REJECTED,
+        )
+        newer.created_at = datetime(2026, 9, 7, 10, tzinfo=KST)
+        add_event(db, title="someone-else")
+        add_event(
+            db,
+            title="deleted",
+            host_id=viewer_id,
+            deleted_at=kst_now(),
+        )
+        db.commit()
+        uuids = (str(newer.uuid), str(older.uuid))
+
+    response = client.get("/api/v1/me/events", headers=auth(viewer_id))
+
+    assert response.status_code == 200
+    assert [item["eventUuid"] for item in response.json()] == list(uuids)
+    assert [item["status"] for item in response.json()] == [
+        "REJECTED",
+        "PENDING",
+    ]
+    assert set(response.json()[0]) == {
+        "eventUuid",
+        "categoryName",
+        "title",
+        "date",
+        "startAt",
+        "endAt",
+        "placeName",
+        "price",
+        "capacity",
+        "currentCount",
+        "status",
+        "cancelReason",
+        "postImageUrl",
+        "createdAt",
+        "updatedAt",
+    }
+
+
+def test_owned_events_requires_authentication_and_can_be_empty(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, _, viewer_id = api
+
+    assert client.get("/api/v1/me/events").status_code == 401
+    response = client.get("/api/v1/me/events", headers=auth(viewer_id))
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_owner_cancellation_is_idempotent_and_preserves_event_history(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """행사 취소는 상태만 바꾸고 행사·참가 기록과 인원을 보존한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="owned", host_id=viewer_id)
+        join(db, event.id, viewer_id)
+        db.commit()
+        event_id = event.id
+        event_uuid = event.uuid
+
+    first = client.delete(
+        f"/api/v1/me/events/{event_uuid}", headers=auth(viewer_id)
+    )
+    second = client.delete(
+        f"/api/v1/me/events/{event_uuid}", headers=auth(viewer_id)
+    )
+
+    assert first.status_code == second.status_code == 204
+    assert first.content == second.content == b""
+    with Session(engine) as db:
+        event = db.get(Event, event_id)
+        assert event is not None
+        assert event.status is EventStatus.CANCEL
+        assert event.deleted_at is None
+        assert event.current_count == 1
+        assert event.updated_at is not None
+        assert db.scalar(
+            sa.select(EventParticipant.id).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == viewer_id,
+            )
+        ) is not None
+
+
+def test_owner_cancellation_rejects_invalid_targets(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        not_owned = add_event(db, title="not-owned")
+        completed = add_event(
+            db,
+            title="completed-owned",
+            host_id=viewer_id,
+            status=EventStatus.COMPLETED,
+        )
+        deleted = add_event(
+            db,
+            title="deleted-owned",
+            host_id=viewer_id,
+            deleted_at=kst_now(),
+        )
+        db.commit()
+        cases = (
+            (not_owned.uuid, 403, "EVENT_NOT_OWNER"),
+            (completed.uuid, 409, "EVENT_NOT_CANCELLABLE"),
+            (deleted.uuid, 404, "EVENT_NOT_FOUND"),
+            (uuid4(), 404, "EVENT_NOT_FOUND"),
+        )
+
+    for event_uuid, expected_status, code in cases:
+        response = client.delete(
+            f"/api/v1/me/events/{event_uuid}", headers=auth(viewer_id)
+        )
+        assert response.status_code == expected_status
+        assert response.json()["code"] == code
+    assert client.delete(f"/api/v1/me/events/{uuid4()}").status_code == 401
+    assert client.delete(
+        "/api/v1/me/events/not-a-uuid", headers=auth(viewer_id)
+    ).status_code == 422
+
+
+def test_event_edit_request_saves_only_changes_without_mutating_event(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """부분 수정값은 별도 저장하고 승인 전 원본 행사는 유지한다."""
+
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(
+            db,
+            title="original",
+            host_id=viewer_id,
+            due_date=days(2),
+        )
+        db.commit()
+        event_id = event.id
+        event_uuid = event.uuid
+
+    response = client.patch(
+        f"/api/v1/me/events/{event_uuid}",
+        headers=auth(viewer_id),
+        json={"title": "changed", "date": days(4).isoformat()},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "eventUuid": str(event_uuid),
+        "message": "행사 수정 요청이 접수되었습니다.",
+    }
+    with Session(engine) as db:
+        event = db.get(Event, event_id)
+        edit = db.scalar(
+            sa.select(EventEditRequest).where(
+                EventEditRequest.event_id == event_id
+            )
+        )
+        assert event is not None
+        assert event.title == "original"
+        assert event.date == days(3)
+        assert edit is not None
+        assert edit.changes == {
+            "title": "changed",
+            "date": days(4).isoformat(),
+        }
+        assert edit.status is EventEditRequestStatus.PENDING
+
+
+def test_event_edit_request_validates_body_and_pending_uniqueness(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(
+            db,
+            title="editable",
+            host_id=viewer_id,
+            due_date=days(2),
+        )
+        db.commit()
+        event_uuid = event.uuid
+
+    invalid_bodies = (
+        {},
+        {"unexpected": "value"},
+        {"title": None},
+        {"dueDate": days(3).isoformat()},
+        {"startAt": "22:00:00"},
+        {"capacity": 0},
+    )
+    for body in invalid_bodies:
+        response = client.patch(
+            f"/api/v1/me/events/{event_uuid}",
+            headers=auth(viewer_id),
+            json=body,
+        )
+        assert response.status_code == 422
+        assert response.json()["code"] == "INVALID_REQUEST"
+
+    first = client.patch(
+        f"/api/v1/me/events/{event_uuid}",
+        headers=auth(viewer_id),
+        json={"detailAddress": None},
+    )
+    duplicate = client.patch(
+        f"/api/v1/me/events/{event_uuid}",
+        headers=auth(viewer_id),
+        json={"title": "second"},
+    )
+    assert first.status_code == 202
+    assert duplicate.status_code == 409
+    assert duplicate.json()["code"] == "EVENT_EDIT_ALREADY_PENDING"
+
+
+def test_event_edit_request_rejects_missing_nonowner_and_terminal_events(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    client, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        not_owned = add_event(db, title="not-owned-edit")
+        rejected = add_event(
+            db,
+            title="rejected-edit",
+            host_id=viewer_id,
+            status=EventStatus.REJECTED,
+        )
+        db.commit()
+        cases = (
+            (not_owned.uuid, 403, "EVENT_NOT_OWNER"),
+            (rejected.uuid, 409, "EVENT_NOT_EDITABLE"),
+            (uuid4(), 404, "EVENT_NOT_FOUND"),
+        )
+
+    for event_uuid, expected_status, code in cases:
+        response = client.patch(
+            f"/api/v1/me/events/{event_uuid}",
+            headers=auth(viewer_id),
+            json={"title": "change"},
+        )
+        assert response.status_code == expected_status
+        assert response.json()["code"] == code
+    assert client.patch(
+        f"/api/v1/me/events/{uuid4()}", json={"title": "change"}
+    ).status_code == 401
+
+
 def test_openapi_event_contract() -> None:
     """문서에 이벤트 경로, 태그, 오류 상태 코드가 노출되는지 확인한다."""
 
@@ -1561,6 +1831,43 @@ def test_openapi_event_contract() -> None:
         "200",
         "401",
         "404",
+        "422",
+        "500",
+    ]
+
+    owned_operation = schema["paths"]["/api/v1/me/events"]["get"]
+    assert owned_operation["summary"] == "내가 올린 행사 조회"
+    assert sorted(owned_operation["responses"]) == [
+        "200",
+        "401",
+        "422",
+        "500",
+    ]
+
+    edit_operation = schema["paths"][
+        "/api/v1/me/events/{eventUuid}"
+    ]["patch"]
+    assert edit_operation["summary"] == "내가 올린 행사 수정 요청"
+    assert sorted(edit_operation["responses"]) == [
+        "202",
+        "401",
+        "403",
+        "404",
+        "409",
+        "422",
+        "500",
+    ]
+
+    owner_cancel_operation = schema["paths"][
+        "/api/v1/me/events/{eventUuid}"
+    ]["delete"]
+    assert owner_cancel_operation["summary"] == "내가 올린 행사 등록 취소"
+    assert sorted(owner_cancel_operation["responses"]) == [
+        "204",
+        "401",
+        "403",
+        "404",
+        "409",
         "422",
         "500",
     ]

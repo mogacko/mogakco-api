@@ -20,16 +20,28 @@ from app.event.errors import EventErrors
 from app.exceptions import (
     BadRequestException,
     ConflictException,
+    DomainValidationException,
+    ForbiddenException,
     NotFoundException,
     TooManyRequestsException,
 )
-from app.models import Event, EventParticipant, EventStatus, User
+from app.models import (
+    Event,
+    EventEditRequest as EventEditRequestModel,
+    EventEditRequestStatus,
+    EventParticipant,
+    EventStatus,
+    User,
+)
 from app.schemas import (
     EventCreateRequest,
     EventDetailResponse,
     EventDisplayStatus,
+    EventEditRequestBody,
     EventListItem,
+    OwnedEventListItem,
 )
+from app.common.errors import CommonErrors
 from app.time import KST, kst_now
 
 logger = logging.getLogger(__name__)
@@ -164,6 +176,111 @@ def register_event(
     db.add(EventParticipant(event_id=event.id, user_id=current_user.id))
     db.commit()
     return event
+
+
+def list_owned_events(db: Session, user_id: int) -> list[OwnedEventListItem]:
+    """등록자가 올린 삭제되지 않은 행사를 최신순으로 반환한다."""
+
+    events = db.scalars(
+        select(Event)
+        .where(Event.host_id == user_id, Event.deleted_at.is_(None))
+        .order_by(Event.created_at.desc(), Event.id.desc())
+    ).all()
+    return [
+        OwnedEventListItem(
+            eventUuid=event.uuid,
+            categoryName=event.category,
+            title=event.title,
+            date=event.date,
+            startAt=event.start_at,
+            endAt=event.end_at,
+            placeName=event.place_name,
+            price=event.price,
+            capacity=event.capacity,
+            currentCount=event.current_count,
+            status=event.status,
+            cancelReason=event.cancel_reason,
+            postImageUrl=event.post_image_url,
+            createdAt=event.created_at,
+            updatedAt=event.updated_at,
+        )
+        for event in events
+    ]
+
+
+def cancel_owned_event(db: Session, event_uuid: UUID, user_id: int) -> None:
+    """등록자가 올린 행사의 상태만 CANCEL로 전환한다."""
+
+    event = db.scalar(
+        select(Event)
+        .where(Event.uuid == event_uuid, Event.deleted_at.is_(None))
+        .with_for_update()
+    )
+    if event is None:
+        raise NotFoundException(EventErrors.NOT_FOUND)
+    if event.host_id != user_id:
+        raise ForbiddenException(EventErrors.NOT_OWNER)
+    if event.status is EventStatus.CANCEL:
+        db.commit()
+        return
+    if event.status not in (EventStatus.PENDING, EventStatus.APPROVED):
+        raise ConflictException(EventErrors.NOT_CANCELLABLE)
+
+    event.status = EventStatus.CANCEL
+    event.updated_at = kst_now()
+    db.commit()
+
+
+def request_event_edit(
+    db: Session,
+    event_uuid: UUID,
+    user_id: int,
+    request: EventEditRequestBody,
+) -> None:
+    """행사 원본을 바꾸지 않고 검증된 변경분을 승인 대기로 저장한다."""
+
+    event = db.scalar(
+        select(Event)
+        .where(Event.uuid == event_uuid, Event.deleted_at.is_(None))
+        .with_for_update()
+    )
+    if event is None:
+        raise NotFoundException(EventErrors.NOT_FOUND)
+    if event.host_id != user_id:
+        raise ForbiddenException(EventErrors.NOT_OWNER)
+    if event.status not in (EventStatus.PENDING, EventStatus.APPROVED):
+        raise ConflictException(EventErrors.NOT_EDITABLE)
+    if db.scalar(
+        select(EventEditRequestModel.id).where(
+            EventEditRequestModel.event_id == event.id,
+            EventEditRequestModel.status == EventEditRequestStatus.PENDING,
+        )
+    ) is not None:
+        raise ConflictException(EventErrors.EDIT_ALREADY_PENDING)
+
+    fields = request.model_fields_set
+    if {"date", "dueDate"} & fields:
+        event_date = request.date if "date" in fields else event.date
+        due_date = request.dueDate if "dueDate" in fields else event.due_date
+        if due_date < kst_now().date() or due_date >= event_date:
+            raise DomainValidationException(CommonErrors.INVALID_REQUEST)
+    if {"startAt", "endAt"} & fields:
+        start_at = request.startAt if "startAt" in fields else event.start_at
+        end_at = request.endAt if "endAt" in fields else event.end_at
+        if start_at >= end_at:
+            raise DomainValidationException(CommonErrors.INVALID_REQUEST)
+    if "capacity" in fields and request.capacity < event.current_count:
+        raise DomainValidationException(CommonErrors.INVALID_REQUEST)
+
+    changes = request.model_dump(mode="json", exclude_unset=True)
+    if changes.get("detailAddress") == "":
+        changes["detailAddress"] = None
+    db.add(EventEditRequestModel(event_id=event.id, changes=changes))
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise ConflictException(EventErrors.EDIT_ALREADY_PENDING) from error
 
 
 def event_list_item_from_row(row: Mapping[str, Any]) -> EventListItem:

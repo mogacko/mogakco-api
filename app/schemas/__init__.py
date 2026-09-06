@@ -17,7 +17,10 @@ from app.schemas.event import (
     EventCreateResponse,
     EventDetailResponse,
     EventDisplayStatus,
+    EventEditRequestBody,
+    EventEditResponse,
     EventListItem,
+    OwnedEventListItem,
 )
 
 __all__ = [
@@ -36,6 +39,9 @@ __all__ = [
     "EventCreateResponse",
     "EventDetailResponse",
     "EventDisplayStatus",
+    "EventEditRequestBody",
+    "EventEditResponse",
     "EventListItem",
     "LikeResponse",
+    "OwnedEventListItem",
 ]

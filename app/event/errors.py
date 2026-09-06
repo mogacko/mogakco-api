@@ -4,6 +4,7 @@ from app.exceptions import (
     BadRequestException,
     ConflictException,
     ErrorSpec,
+    ForbiddenException,
     NotFoundException,
     TooManyRequestsException,
 )
@@ -24,6 +25,26 @@ class EventErrors:
         BadRequestException,
         "INVALID_EVENT_TIME",
         "행사 종료 시간은 시작 시간보다 늦어야 합니다.",
+    )
+    NOT_OWNER = ErrorSpec(
+        ForbiddenException,
+        "EVENT_NOT_OWNER",
+        "본인이 등록한 행사만 수정하거나 취소할 수 있습니다.",
+    )
+    NOT_CANCELLABLE = ErrorSpec(
+        ConflictException,
+        "EVENT_NOT_CANCELLABLE",
+        "취소할 수 없는 행사 상태입니다.",
+    )
+    EDIT_ALREADY_PENDING = ErrorSpec(
+        ConflictException,
+        "EVENT_EDIT_ALREADY_PENDING",
+        "승인 대기 중인 수정 요청이 있습니다.",
+    )
+    NOT_EDITABLE = ErrorSpec(
+        ConflictException,
+        "EVENT_NOT_EDITABLE",
+        "수정할 수 없는 행사 상태입니다.",
     )
     PARTICIPATION_BUSY = ErrorSpec(
         TooManyRequestsException,

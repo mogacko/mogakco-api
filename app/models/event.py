@@ -22,6 +22,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -46,6 +47,14 @@ class EventStatus(StrEnum):
     COMPLETED = "COMPLETED"
     REJECTED = "REJECTED"
     CANCEL = "CANCEL"
+
+
+class EventEditRequestStatus(StrEnum):
+    """행사 수정 요청의 처리 상태."""
+
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 class Event(Base):
@@ -169,6 +178,47 @@ class EventParticipant(Base):
     )
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=kst_now, server_default=func.now()
+    )
+
+
+class EventEditRequest(Base):
+    """관리자 승인 전까지 행사와 분리해 보관하는 수정 요청."""
+
+    __tablename__ = "event_edit_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PENDING', 'APPROVED', 'REJECTED')",
+            name="ck_event_edit_requests_status",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(changes) = 'object' AND changes <> '{}'::jsonb",
+            name="ck_event_edit_requests_changes_object",
+        ),
+        Index(
+            "uq_event_edit_requests_pending_event_id",
+            "event_id",
+            unique=True,
+            postgresql_where=text("status = 'PENDING'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE")
+    )
+    changes: Mapped[dict[str, object]] = mapped_column(JSONB)
+    status: Mapped[EventEditRequestStatus] = mapped_column(
+        Enum(
+            EventEditRequestStatus,
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        default=EventEditRequestStatus.PENDING,
+        server_default=text("'PENDING'"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=kst_now, server_default=func.now()
