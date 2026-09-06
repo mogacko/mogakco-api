@@ -162,6 +162,12 @@ def add_event(
     price: int = 0,
     capacity: int = 10,
     post_image_url: str | None = None,
+    place_name: str = "카페 그리다 역삼",
+    address: str = "서울특별시 강남구 테헤란로 132",
+    detail_address: str | None = "2층",
+    latitude: float = 37.5001234,
+    longitude: float = 127.035321,
+    kakao_place_id: str | None = "123456789",
     cancel_reason: str | None = None,
     host_id: int | None = None,
     status: EventStatus | None = None,
@@ -182,7 +188,12 @@ def add_event(
         category=category,
         title=title,
         description=description,
-        place="OO 공유오피스 라운지",
+        place_name=place_name,
+        address=address,
+        detail_address=detail_address,
+        latitude=latitude,
+        longitude=longitude,
+        kakao_place_id=kakao_place_id,
         date=event_date,
         due_date=event_date if due_date is None else due_date,
         start_at=start_at,
@@ -222,7 +233,12 @@ def event_create_payload(**changes: object) -> dict[str, object]:
         "categoryName": "SEMINAR",
         "title": "이벤트 제목",
         "description": "이벤트 설명 내용",
-        "place": "OO 공유오피스 라운지",
+        "placeName": "카페 그리다 역삼",
+        "address": "서울특별시 강남구 테헤란로 132",
+        "detailAddress": "2층",
+        "latitude": 37.5001234,
+        "longitude": 127.035321,
+        "kakaoPlaceId": "123456789",
         "date": days(3).isoformat(),
         "startAt": "19:00:00",
         "endAt": "21:00:00",
@@ -261,7 +277,12 @@ def test_create_event_registers_pending_host_as_first_participant(
         assert event.category is EventCategory.SEMINAR
         assert event.title == "이벤트 제목"
         assert event.description == "이벤트 설명 내용"
-        assert event.place == "OO 공유오피스 라운지"
+        assert event.place_name == "카페 그리다 역삼"
+        assert event.address == "서울특별시 강남구 테헤란로 132"
+        assert event.detail_address == "2층"
+        assert event.latitude == pytest.approx(37.5001234)
+        assert event.longitude == pytest.approx(127.035321)
+        assert event.kakao_place_id == "123456789"
         assert event.date == days(3)
         assert event.due_date == days(2)
         assert event.start_at == time(19, 0)
@@ -294,6 +315,10 @@ def test_create_event_requires_authentication_and_valid_input(
         (event_create_payload(dueDate=days(3).isoformat()), 400),
         (event_create_payload(startAt="21:00:00"), 400),
         (event_create_payload(capacity=0), 422),
+        (event_create_payload(latitude=-90.0001), 422),
+        (event_create_payload(latitude=90.0001), 422),
+        (event_create_payload(longitude=-180.0001), 422),
+        (event_create_payload(longitude=180.0001), 422),
         (event_create_payload(unexpected="value"), 422),
     )
     for payload, expected_status in invalid_cases:
@@ -303,6 +328,34 @@ def test_create_event_requires_authentication_and_valid_input(
             json=payload,
         )
         assert response.status_code == expected_status
+
+
+def test_create_event_allows_location_without_kakao_place_id(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    """직접 지정한 장소는 카카오 ID 없이 저장하고 빈 상세 주소를 NULL로 바꾼다."""
+
+    client, engine, viewer_id = api
+    response = client.post(
+        "/api/v1/events",
+        headers=auth(viewer_id),
+        json=event_create_payload(
+            title="직접 지정 장소",
+            detailAddress="   ",
+            kakaoPlaceId=None,
+        ),
+    )
+
+    assert response.status_code == 201
+    with Session(engine) as db:
+        event = db.scalar(
+            sa.select(Event).where(
+                Event.uuid == UUID(response.json()["eventUuid"])
+            )
+        )
+        assert event is not None
+        assert event.detail_address is None
+        assert event.kakao_place_id is None
 
 
 def test_public_queries_hide_pending_and_rejected_events(
@@ -379,7 +432,7 @@ def test_list_returns_full_dto(
             "startAt": "19:00:00",
             "endAt": "21:00:00",
             "title": "이벤트 제목",
-            "place": "OO 공유오피스 라운지",
+            "placeName": "카페 그리다 역삼",
             "price": 15_000,
             "capacity": 30,
             "currentCount": 1,
@@ -658,7 +711,7 @@ def test_detail_returns_full_dto(
         "startAt": "19:00:00",
         "endAt": "21:00:00",
         "title": "이벤트 제목",
-        "place": "OO 공유오피스 라운지",
+        "placeName": "카페 그리다 역삼",
         "price": 15_000,
         "capacity": 7,
         "currentCount": 1,
@@ -667,6 +720,11 @@ def test_detail_returns_full_dto(
         "postImageUrl": "https://images.example.com/detail.png",
         "description": "이벤트 설명 내용",
         "dueDate": days(5).isoformat(),
+        "address": "서울특별시 강남구 테헤란로 132",
+        "detailAddress": "2층",
+        "latitude": 37.5001234,
+        "longitude": 127.035321,
+        "kakaoPlaceId": "123456789",
     }
 
 

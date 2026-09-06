@@ -26,9 +26,21 @@ EventTitle = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=50),
 ]
-EventPlace = Annotated[
+PlaceName = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+]
+Address = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+]
+DetailAddress = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, max_length=100),
+]
+KakaoPlaceId = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=50),
 ]
 
 
@@ -40,7 +52,12 @@ class EventCreateRequest(BaseModel):
     categoryName: EventCategory
     title: EventTitle
     description: RequiredText
-    place: EventPlace
+    placeName: PlaceName
+    address: Address
+    detailAddress: DetailAddress | None = None
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    kakaoPlaceId: KakaoPlaceId | None = None
     date: date
     startAt: time
     endAt: time
@@ -70,7 +87,7 @@ class EventListItem(BaseModel):
     startAt: time
     endAt: time
     title: str
-    place: str
+    placeName: str
     price: int = Field(ge=0)
     capacity: int = Field(ge=0)
     currentCount: int = Field(ge=0)
@@ -84,3 +101,8 @@ class EventDetailResponse(EventListItem):
 
     description: str
     dueDate: date
+    address: str
+    detailAddress: str | None
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    kakaoPlaceId: str | None

@@ -116,7 +116,15 @@ def get_event_detail(
 
     row = db.execute(
         select_events_with_stats(current_user.id)
-        .add_columns(Event.description, Event.due_date)
+        .add_columns(
+            Event.description,
+            Event.due_date,
+            Event.address,
+            Event.detail_address,
+            Event.latitude,
+            Event.longitude,
+            Event.kakao_place_id,
+        )
         .where(Event.uuid == eventUuid)
     ).mappings().one_or_none()
     if row is None:
