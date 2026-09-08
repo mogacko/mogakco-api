@@ -8,6 +8,7 @@ from time import sleep
 from typing import Any
 from uuid import UUID, uuid4
 
+from geoalchemy2.elements import WKTElement
 from redis import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import delete, or_, select, update
@@ -141,8 +142,10 @@ def register_event(
         place_name=request.placeName,
         address=request.address,
         detail_address=request.detailAddress or None,
-        latitude=request.latitude,
-        longitude=request.longitude,
+        location=WKTElement(
+            f"POINT({request.longitude} {request.latitude})",
+            srid=4326,
+        ),
         kakao_place_id=request.kakaoPlaceId,
         date=request.date,
         due_date=request.dueDate,

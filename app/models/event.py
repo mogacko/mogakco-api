@@ -4,11 +4,12 @@ from datetime import date, datetime, time
 from enum import StrEnum
 from uuid import UUID, uuid4
 
+from geoalchemy2 import Geography
+from geoalchemy2.elements import WKBElement
 from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
-    Double,
     Enum,
     ForeignKey,
     Index,
@@ -69,14 +70,6 @@ class Event(Base):
             "status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCEL')",
             name="ck_events_status",
         ),
-        CheckConstraint(
-            "latitude >= -90 AND latitude <= 90",
-            name="ck_events_latitude_range",
-        ),
-        CheckConstraint(
-            "longitude >= -180 AND longitude <= 180",
-            name="ck_events_longitude_range",
-        ),
         Index(
             "ix_events_region_category_date",
             "region_id",
@@ -122,8 +115,9 @@ class Event(Base):
     place_name: Mapped[str] = mapped_column(String(100))
     address: Mapped[str] = mapped_column(String(255))
     detail_address: Mapped[str | None] = mapped_column(String(100))
-    latitude: Mapped[float] = mapped_column(Double)
-    longitude: Mapped[float] = mapped_column(Double)
+    location: Mapped[WKBElement] = mapped_column(
+        Geography(geometry_type="POINT", srid=4326, spatial_index=False)
+    )
     kakao_place_id: Mapped[str | None] = mapped_column(String(50))
     date: Mapped[date] = mapped_column(Date)
     due_date: Mapped[date] = mapped_column(Date)

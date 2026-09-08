@@ -5,7 +5,9 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from geoalchemy2 import Geometry
 from redis import Redis
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -121,8 +123,16 @@ def get_event_detail(
             Event.due_date,
             Event.address,
             Event.detail_address,
-            Event.latitude,
-            Event.longitude,
+            func.ST_Y(
+                Event.location.cast(
+                    Geometry("POINT", srid=4326, spatial_index=False)
+                )
+            ).label("latitude"),
+            func.ST_X(
+                Event.location.cast(
+                    Geometry("POINT", srid=4326, spatial_index=False)
+                )
+            ).label("longitude"),
             Event.kakao_place_id,
         )
         .where(Event.uuid == eventUuid)

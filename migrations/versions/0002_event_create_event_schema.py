@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from geoalchemy2 import Geography
 
 
 revision: str = '0002_event'
@@ -21,6 +22,7 @@ def upgrade() -> None:
     """이벤트 본문과 사용자 참가 관계를 저장할 테이블을 생성한다."""
 
     # 이벤트 기본 정보와 목록 필터에 쓰이는 지역·카테고리·날짜를 저장한다.
+    op.execute("CREATE EXTENSION IF NOT EXISTS postgis")
     op.create_table('events',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('uuid', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
@@ -33,8 +35,7 @@ def upgrade() -> None:
     sa.Column('place_name', sa.String(length=100), nullable=False),
     sa.Column('address', sa.String(length=255), nullable=False),
     sa.Column('detail_address', sa.String(length=100), nullable=True),
-    sa.Column('latitude', sa.Double(), nullable=False),
-    sa.Column('longitude', sa.Double(), nullable=False),
+    sa.Column('location', Geography(geometry_type='POINT', srid=4326, spatial_index=False), nullable=False),
     sa.Column('kakao_place_id', sa.String(length=50), nullable=True),
     sa.Column('date', sa.Date(), nullable=False),
     sa.Column('due_date', sa.Date(), nullable=False),
@@ -50,8 +51,6 @@ def upgrade() -> None:
     sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
     sa.CheckConstraint('capacity >= 0', name='ck_events_capacity_non_negative'),
     sa.CheckConstraint('current_count >= 0 AND current_count <= capacity', name='ck_events_current_count_range'),
-    sa.CheckConstraint('latitude >= -90 AND latitude <= 90', name='ck_events_latitude_range'),
-    sa.CheckConstraint('longitude >= -180 AND longitude <= 180', name='ck_events_longitude_range'),
     sa.CheckConstraint('price >= 0', name='ck_events_price_non_negative'),
     sa.CheckConstraint("status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCEL')", name='ck_events_status'),
     sa.ForeignKeyConstraint(['host_id'], ['users.id'], name=op.f('fk_events_host_id_users'), ondelete='SET NULL'),

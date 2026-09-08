@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:17-alpine
+    image: postgis/postgis:17-3.6-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-mogakco}
       POSTGRES_USER: ${POSTGRES_USER:-mogakco}

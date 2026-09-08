@@ -12,6 +12,8 @@ import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from geoalchemy2 import Geometry
+from geoalchemy2.elements import WKTElement
 from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
 
@@ -191,8 +193,7 @@ def add_event(
         place_name=place_name,
         address=address,
         detail_address=detail_address,
-        latitude=latitude,
-        longitude=longitude,
+        location=WKTElement(f"POINT({longitude} {latitude})", srid=4326),
         kakao_place_id=kakao_place_id,
         date=event_date,
         due_date=event_date if due_date is None else due_date,
@@ -280,8 +281,22 @@ def test_create_event_registers_pending_host_as_first_participant(
         assert event.place_name == "카페 그리다 역삼"
         assert event.address == "서울특별시 강남구 테헤란로 132"
         assert event.detail_address == "2층"
-        assert event.latitude == pytest.approx(37.5001234)
-        assert event.longitude == pytest.approx(127.035321)
+        stored_latitude, stored_longitude = db.execute(
+            sa.select(
+                sa.func.ST_Y(
+                    Event.location.cast(
+                        Geometry("POINT", srid=4326, spatial_index=False)
+                    )
+                ),
+                sa.func.ST_X(
+                    Event.location.cast(
+                        Geometry("POINT", srid=4326, spatial_index=False)
+                    )
+                ),
+            ).where(Event.id == event.id)
+        ).one()
+        assert stored_latitude == pytest.approx(37.5001234)
+        assert stored_longitude == pytest.approx(127.035321)
         assert event.kakao_place_id == "123456789"
         assert event.date == days(3)
         assert event.due_date == days(2)
