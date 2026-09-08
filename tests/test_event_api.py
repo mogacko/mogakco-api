@@ -340,6 +340,8 @@ def test_create_event_requires_authentication_and_valid_input(
         (event_create_payload(dueDate=days(-1).isoformat()), 400),
         (event_create_payload(dueDate=days(3).isoformat()), 400),
         (event_create_payload(startAt="21:00:00"), 400),
+        (event_create_payload(startAt="18:00:00+09:00"), 422),
+        (event_create_payload(endAt="21:00:00+09:00"), 422),
         (event_create_payload(capacity=0), 422),
         (event_create_payload(latitude=-90.0001), 422),
         (event_create_payload(latitude=90.0001), 422),
@@ -1733,6 +1735,8 @@ def test_event_edit_request_validates_body_and_pending_uniqueness(
         {"title": None},
         {"dueDate": days(3).isoformat()},
         {"startAt": "22:00:00"},
+        {"startAt": "18:00:00+09:00"},
+        {"endAt": "21:00:00+09:00"},
         {"capacity": 0},
     )
     for body in invalid_bodies:

@@ -1,7 +1,7 @@
 """이벤트 목록 API의 응답 스키마와 상태 값."""
 
 from datetime import date as Date
-from datetime import datetime, time
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Self
 from uuid import UUID
@@ -14,6 +14,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.common.types import OffsetFreeTime
 from app.models import EventCategory, EventStatus
 
 
@@ -66,8 +67,8 @@ class EventCreateRequest(BaseModel):
     longitude: float = Field(ge=-180, le=180)
     kakaoPlaceId: KakaoPlaceId | None = None
     date: Date
-    startAt: time
-    endAt: time
+    startAt: OffsetFreeTime
+    endAt: OffsetFreeTime
     capacity: int = Field(ge=1)
     dueDate: Date
     postImageUrl: Annotated[str, StringConstraints(max_length=500)] | None = None
@@ -96,8 +97,8 @@ class EventEditRequestBody(BaseModel):
     longitude: float | None = Field(default=None, ge=-180, le=180)
     kakaoPlaceId: KakaoPlaceId | None = None
     date: Date | None = None
-    startAt: time | None = None
-    endAt: time | None = None
+    startAt: OffsetFreeTime | None = None
+    endAt: OffsetFreeTime | None = None
     capacity: int | None = Field(default=None, ge=1)
     dueDate: Date | None = None
     postImageUrl: Annotated[
@@ -146,8 +147,8 @@ class OwnedEventListItem(BaseModel):
     categoryName: EventCategory
     title: str
     date: Date
-    startAt: time
-    endAt: time
+    startAt: OffsetFreeTime
+    endAt: OffsetFreeTime
     placeName: str
     price: int = Field(ge=0)
     capacity: int = Field(ge=0)
@@ -169,8 +170,8 @@ class EventListItem(BaseModel):
     eventUuid: UUID
     categoryName: EventCategory
     date: Date
-    startAt: time
-    endAt: time
+    startAt: OffsetFreeTime
+    endAt: OffsetFreeTime
     title: str
     placeName: str
     price: int = Field(ge=0)
