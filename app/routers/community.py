@@ -63,6 +63,7 @@ _COMMON_ERRORS = (
     AuthErrors.REQUIRED,
     CommonErrors.INVALID_REQUEST,
     CommonErrors.INTERNAL_SERVER_ERROR,
+    CommonErrors.CONFIGURATION_ERROR,
 )
 
 

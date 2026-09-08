@@ -1405,6 +1405,11 @@ def test_openapi_event_contract() -> None:
         "422",
         "500",
     ]
+    assert set(
+        operation["responses"]["500"]["content"]["application/json"][
+            "examples"
+        ]
+    ) == {"INTERNAL_SERVER_ERROR", "CONFIGURATION_ERROR"}
 
     create_operation = events_path["post"]
     assert create_operation["summary"] == "이벤트 등록 신청"

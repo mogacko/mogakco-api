@@ -44,6 +44,7 @@ _COMMON_ERRORS = (
     AuthErrors.REQUIRED,
     CommonErrors.INVALID_REQUEST,
     CommonErrors.INTERNAL_SERVER_ERROR,
+    CommonErrors.CONFIGURATION_ERROR,
 )
 
 # 지난 행사는 종료 후 7일까지만 목록에 남기고, 예정된 행사는 전부 보여준다.

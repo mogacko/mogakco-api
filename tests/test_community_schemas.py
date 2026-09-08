@@ -65,6 +65,14 @@ def test_openapi_community_contract() -> None:
         assert operation["summary"] == summary
         assert operation["tags"] == ["커뮤니티"]
 
+    server_error_examples = paths["/api/v1/community-posts"]["get"][
+        "responses"
+    ]["500"]["content"]["application/json"]["examples"]
+    assert set(server_error_examples) == {
+        "INTERNAL_SERVER_ERROR",
+        "CONFIGURATION_ERROR",
+    }
+
     header_parameters = [
         parameter
         for path_operations in paths.values()
