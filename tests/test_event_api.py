@@ -1104,6 +1104,46 @@ def test_cancel_event_removes_participant_and_decrements_counter(
         ) is None
 
 
+def test_cancel_event_locks_event_before_deleting_participant(
+    api: tuple[TestClient, sa.Engine, int],
+) -> None:
+    _, engine, viewer_id = api
+    with Session(engine, expire_on_commit=False) as db:
+        event = add_event(db, title="cancel-lock-order")
+        join(db, event.id, viewer_id)
+        db.commit()
+        event_uuid = event.uuid
+
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        *_args: object,
+    ) -> None:
+        statements.append(statement.upper())
+
+    sa.event.listen(engine, "before_cursor_execute", capture_statement)
+    try:
+        with Session(engine) as db:
+            cancel_event_application(db, event_uuid, viewer_id)
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", capture_statement)
+
+    event_lock = next(
+        index
+        for index, statement in enumerate(statements)
+        if "FROM EVENTS" in statement and "FOR UPDATE" in statement
+    )
+    participant_delete = next(
+        index
+        for index, statement in enumerate(statements)
+        if statement.lstrip().startswith("DELETE FROM EVENT_PARTICIPANTS")
+    )
+    assert event_lock < participant_delete
+
+
 def test_host_cannot_cancel_own_participation(
     api: tuple[TestClient, sa.Engine, int],
 ) -> None:

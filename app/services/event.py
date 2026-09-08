@@ -373,7 +373,7 @@ def cancel_event_application(
 ) -> None:
     """참가 관계 삭제와 이벤트 카운터 감소를 함께 커밋한다."""
 
-    cancellable_event_id = (
+    event_id = db.scalar(
         select(Event.id)
         .where(
             Event.uuid == event_uuid,
@@ -382,17 +382,20 @@ def cancel_event_application(
             or_(Event.host_id.is_(None), Event.host_id != user_id),
             Event.date >= kst_now().date(),
         )
-        .scalar_subquery()
-    )
-    event_id = db.scalar(
-        delete(EventParticipant)
-        .where(
-            EventParticipant.event_id == cancellable_event_id,
-            EventParticipant.user_id == user_id,
-        )
-        .returning(EventParticipant.event_id)
+        .with_for_update()
     )
     if event_id is None:
+        _raise_event_cancellation_error(db, event_uuid, user_id)
+
+    participant_id = db.scalar(
+        delete(EventParticipant)
+        .where(
+            EventParticipant.event_id == event_id,
+            EventParticipant.user_id == user_id,
+        )
+        .returning(EventParticipant.id)
+    )
+    if participant_id is None:
         _raise_event_cancellation_error(db, event_uuid, user_id)
 
     updated_event_id = db.scalar(
