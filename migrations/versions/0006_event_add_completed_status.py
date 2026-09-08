@@ -1,7 +1,7 @@
 """add completed event status and active host constraint
 
 Revision ID: 0006_event_completed
-Revises: 0005_event_host_status
+Revises: 0002_event
 Create Date: 2026-09-07 00:00:00.000000
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 
 
 revision: str = "0006_event_completed"
-down_revision: str | None = "0005_event_host_status"
+down_revision: str | None = "0002_event"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

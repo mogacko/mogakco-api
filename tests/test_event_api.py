@@ -1738,6 +1738,8 @@ def test_event_edit_request_validates_body_and_pending_uniqueness(
         {"startAt": "18:00:00+09:00"},
         {"endAt": "21:00:00+09:00"},
         {"capacity": 0},
+        {"latitude": 37.5},
+        {"longitude": 127.0},
     )
     for body in invalid_bodies:
         response = client.patch(

@@ -130,6 +130,10 @@ class EventEditRequestBody(BaseModel):
             for field in self.model_fields_set & required_fields
         ):
             raise ValueError("required event fields cannot be null")
+        if ("latitude" in self.model_fields_set) != (
+            "longitude" in self.model_fields_set
+        ):
+            raise ValueError("latitude and longitude must be provided together")
         return self
 
 
