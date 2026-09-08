@@ -21,23 +21,18 @@ def error_responses(*errors: ErrorSpec) -> dict[int, dict[str, object]]:
         seen_codes.add(error.code)
         grouped.setdefault(int(error.status_code), []).append(error)
 
-    return {
-        status_code: {
-            "model": ErrorResponse,
-            "content": {
-                "application/json": {
-                    "examples": {
-                        error.code: {
-                            "summary": error.code,
-                            "value": {
-                                "code": error.code,
-                                "message": error.message,
-                            },
-                        }
-                        for error in status_errors
-                    }
-                }
-            },
+    responses: dict[int, dict[str, object]] = {}
+    for status_code, status_errors in grouped.items():
+        examples = {
+            error.code: {
+                "summary": error.code,
+                "value": {"code": error.code, "message": error.message},
+            }
+            for error in status_errors
         }
-        for status_code, status_errors in grouped.items()
-    }
+        responses[status_code] = {
+            "model": ErrorResponse,
+            "content": {"application/json": {"examples": examples}},
+        }
+
+    return responses
