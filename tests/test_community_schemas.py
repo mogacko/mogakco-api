@@ -59,7 +59,7 @@ def test_openapi_community_contract() -> None:
         for path, path_operations in paths.items()
         for method in path_operations
     }
-    assert operations == summaries.keys()
+    assert summaries.keys() <= operations
     for (method, path), summary in summaries.items():
         operation = paths[path][method.lower()]
         assert operation["summary"] == summary

@@ -21,6 +21,21 @@ class NotFoundError(AppException):
         super().__init__(404, code, message)
 
 
+class BadRequestError(AppException):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(400, code, message)
+
+
+class ConflictError(AppException):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(409, code, message)
+
+
+class TooManyRequestsError(AppException):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(429, code, message)
+
+
 class DomainValidationError(AppException):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(422, code, message)

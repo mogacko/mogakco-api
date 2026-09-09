@@ -34,9 +34,9 @@ from app.schemas import (
     CommunityPostDetailResponse,
     CommunityPostPageResponse,
     CommunityPostUpdateRequest,
-    ErrorResponse,
     LikeResponse,
 )
+from app.schemas.error import error_responses
 from app.services.community import (
     comment_threads_from_rows,
     community_post_like_key,
@@ -53,10 +53,6 @@ from app.time import kst_now
 
 router = APIRouter(prefix="/api/v1", tags=["커뮤니티"])
 logger = logging.getLogger(__name__)
-
-
-def _error_responses(*status_codes: int) -> dict[int, dict[str, object]]:
-    return {status_code: {"model": ErrorResponse} for status_code in status_codes}
 
 
 def _enabled_region(db: Session, region_name: str) -> Region:
@@ -143,7 +139,7 @@ def _page_response(
 @router.get(
     "/comments",
     response_model=CommentThreadResponse,
-    responses=_error_responses(401, 404, 422, 500),
+    responses=error_responses(401, 404, 422, 500),
     summary="댓글 목록 조회",
 )
 def list_comments(
@@ -168,7 +164,7 @@ def list_comments(
     "/comments",
     status_code=status.HTTP_201_CREATED,
     response_class=Response,
-    responses=_error_responses(401, 404, 422, 500),
+    responses=error_responses(401, 404, 422, 500),
     summary="댓글 작성",
 )
 def create_comment(
@@ -228,7 +224,7 @@ def create_comment(
     "/comments/{commentUuid}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    responses=_error_responses(401, 403, 404, 422, 500),
+    responses=error_responses(401, 403, 404, 422, 500),
     summary="댓글 수정",
 )
 def update_comment(
@@ -257,7 +253,7 @@ def update_comment(
 @router.delete(
     "/comments/{commentUuid}",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses=_error_responses(401, 403, 404, 422, 500),
+    responses=error_responses(401, 403, 404, 422, 500),
     summary="댓글 삭제",
 )
 def delete_comment(
@@ -284,7 +280,7 @@ def delete_comment(
 @router.get(
     "/community-posts",
     response_model=CommunityPostPageResponse,
-    responses=_error_responses(401, 404, 422, 500, 503),
+    responses=error_responses(401, 404, 422, 500, 503),
     summary="게시글 목록 조회",
 )
 def list_community_posts(
@@ -334,7 +330,7 @@ def list_community_posts(
 @router.get(
     "/community-posts/detail",
     response_model=CommunityPostDetailResponse,
-    responses=_error_responses(401, 404, 422, 500, 503),
+    responses=error_responses(401, 404, 422, 500, 503),
     summary="게시글 상세 조회",
 )
 def get_community_post_detail(
@@ -400,7 +396,7 @@ def get_community_post_detail(
     "/regions/{regionName}/community-posts",
     status_code=status.HTTP_201_CREATED,
     response_class=Response,
-    responses=_error_responses(401, 403, 404, 422, 500),
+    responses=error_responses(401, 403, 404, 422, 500),
     summary="게시글 작성",
 )
 def create_community_post(
@@ -430,7 +426,7 @@ def create_community_post(
 @router.get(
     "/community-posts/search",
     response_model=CommunityPostPageResponse,
-    responses=_error_responses(401, 404, 422, 500, 503),
+    responses=error_responses(401, 404, 422, 500, 503),
     summary="게시글 검색",
 )
 def search_community_posts(
@@ -476,7 +472,7 @@ def search_community_posts(
 @router.post(
     "/community-posts/{communityPostUuid}/likes",
     response_model=LikeResponse,
-    responses=_error_responses(401, 404, 422, 500, 503),
+    responses=error_responses(401, 404, 422, 500, 503),
     summary="게시글 좋아요",
 )
 def like_community_post(
@@ -502,7 +498,7 @@ def like_community_post(
 @router.delete(
     "/community-posts/{communityPostUuid}/likes",
     response_model=LikeResponse,
-    responses=_error_responses(401, 404, 422, 500, 503),
+    responses=error_responses(401, 404, 422, 500, 503),
     summary="게시글 좋아요 취소",
 )
 def unlike_community_post(
@@ -529,7 +525,7 @@ def unlike_community_post(
     "/community-posts/{communityPostUuid}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    responses=_error_responses(401, 403, 404, 422, 500),
+    responses=error_responses(401, 403, 404, 422, 500),
     summary="게시글 수정",
 )
 def update_community_post(
@@ -567,7 +563,7 @@ def update_community_post(
 @router.delete(
     "/community-posts/{communityPostUuid}",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses=_error_responses(401, 403, 404, 422, 500),
+    responses=error_responses(401, 403, 404, 422, 500),
     summary="게시글 삭제",
 )
 def delete_community_post(
