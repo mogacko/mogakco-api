@@ -9,7 +9,6 @@ from app.models import (
     CommunityPostBoard,
     CommunityPostCategory,
 )
-from app.services.community import validate_community_post_category
 
 CommunityPostTitle = Annotated[
     str, StringConstraints(min_length=1, max_length=25)
@@ -29,11 +28,6 @@ class CommunityPostCreateRequest(_RequestModel):
     categoryName: CommunityPostCategory | None = None
     title: CommunityPostTitle
     body: CommunityPostBody
-
-    @model_validator(mode="after")
-    def validate_category(self) -> Self:
-        validate_community_post_category(self.boardName, self.categoryName)
-        return self
 
 
 class CommunityPostUpdateRequest(_RequestModel):

@@ -459,8 +459,8 @@ def test_search_query_length_boundaries(
     assert response.status_code == status_code
     if status_code == 422:
         assert response.json() == {
-            "code": "INVALID_SEARCH_QUERY",
-            "message": "검색어는 1자 이상 100자 이내로 입력해주세요.",
+            "code": "INVALID_REQUEST",
+            "message": "요청값이 올바르지 않습니다.",
         }
 
 

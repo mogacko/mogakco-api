@@ -7,6 +7,7 @@ from alembic.config import Config
 from sqlalchemy.exc import IntegrityError
 
 from app.database import create_db_engine
+from app.exceptions import DomainValidationException
 from app.models import CommunityPostBoard, CommunityPostCategory
 from app.services.community import validate_community_post_category
 
@@ -21,13 +22,16 @@ def test_community_post_category_rules() -> None:
     validate_community_post_category(CommunityPostBoard.NOTICE, None)
     validate_community_post_category(CommunityPostBoard.QUESTION, None)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(DomainValidationException) as missing_category:
         validate_community_post_category(CommunityPostBoard.TALK, None)
-    with pytest.raises(ValueError):
+    assert missing_category.value.code == "INVALID_COMMUNITY_MENU"
+
+    with pytest.raises(DomainValidationException) as unsupported_category:
         validate_community_post_category(
             CommunityPostBoard.NOTICE,
             CommunityPostCategory.FREE,
         )
+    assert unsupported_category.value.code == "INVALID_COMMUNITY_MENU"
 
 
 def test_initial_migration_community_constraints_and_delete_rules() -> None:

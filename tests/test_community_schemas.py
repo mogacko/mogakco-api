@@ -65,6 +65,14 @@ def test_openapi_community_contract() -> None:
         assert operation["summary"] == summary
         assert operation["tags"] == ["커뮤니티"]
 
+    server_error_examples = paths["/api/v1/community-posts"]["get"][
+        "responses"
+    ]["500"]["content"]["application/json"]["examples"]
+    assert set(server_error_examples) == {
+        "INTERNAL_SERVER_ERROR",
+        "CONFIGURATION_ERROR",
+    }
+
     header_parameters = [
         parameter
         for path_operations in paths.values()
@@ -225,19 +233,6 @@ def test_request_schemas_preserve_raw_text_and_enforce_contract() -> None:
             title="제목",
             body="본문",
             authorUuid=uuid4(),
-        )
-    with pytest.raises(ValidationError):
-        CommunityPostCreateRequest(
-            boardName="talk",
-            title="제목",
-            body="본문",
-        )
-    with pytest.raises(ValidationError):
-        CommunityPostCreateRequest(
-            boardName="question",
-            categoryName="free",
-            title="제목",
-            body="본문",
         )
     with pytest.raises(ValidationError):
         CommunityPostCreateRequest(
