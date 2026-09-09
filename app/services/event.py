@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timedelta
 from time import sleep
 from typing import Any
 from uuid import UUID, uuid4
@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from geoalchemy2.elements import WKTElement
 from redis import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
@@ -20,17 +20,29 @@ from app.event.errors import EventErrors
 from app.exceptions import (
     BadRequestException,
     ConflictException,
+    DomainValidationException,
+    ForbiddenException,
     NotFoundException,
     TooManyRequestsException,
 )
-from app.models import Event, EventParticipant, EventStatus, User
+from app.models import (
+    Event,
+    EventEditRequest as EventEditRequestModel,
+    EventEditRequestStatus,
+    EventParticipant,
+    EventStatus,
+    User,
+)
 from app.schemas import (
     EventCreateRequest,
     EventDetailResponse,
     EventDisplayStatus,
+    EventEditRequestBody,
     EventListItem,
+    OwnedEventListItem,
 )
-from app.time import kst_now
+from app.common.errors import CommonErrors
+from app.time import KST, kst_now
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +97,13 @@ def select_events_with_stats(current_user_id: int) -> Select:
         # 삭제된 이벤트는 모든 목록 조회에서 공통으로 제외한다.
         .where(
             Event.deleted_at.is_(None),
-            Event.status.in_((EventStatus.APPROVED, EventStatus.CANCEL)),
+            Event.status.in_(
+                (
+                    EventStatus.APPROVED,
+                    EventStatus.COMPLETED,
+                    EventStatus.CANCEL,
+                )
+            ),
         )
     )
 
@@ -105,6 +123,8 @@ def event_status(row: Mapping[str, Any]) -> EventDisplayStatus:
 
     if row["status"] is EventStatus.CANCEL:
         return EventDisplayStatus.CANCEL
+    if row["status"] is EventStatus.COMPLETED:
+        return EventDisplayStatus.EXPIRED
     if is_event_expired(row["date"]):
         return EventDisplayStatus.EXPIRED
     if row["is_participating"]:
@@ -158,6 +178,114 @@ def register_event(
     return event
 
 
+def list_owned_events(db: Session, user_id: int) -> list[OwnedEventListItem]:
+    """등록자가 올린 삭제되지 않은 행사를 최신순으로 반환한다."""
+
+    events = db.scalars(
+        select(Event)
+        .where(Event.host_id == user_id, Event.deleted_at.is_(None))
+        .order_by(Event.created_at.desc(), Event.id.desc())
+    ).all()
+    return [
+        OwnedEventListItem(
+            eventUuid=event.uuid,
+            categoryName=event.category,
+            title=event.title,
+            date=event.date,
+            startAt=event.start_at,
+            endAt=event.end_at,
+            placeName=event.place_name,
+            price=event.price,
+            capacity=event.capacity,
+            currentCount=event.current_count,
+            status=event.status,
+            cancelReason=event.cancel_reason,
+            postImageUrl=event.post_image_url,
+            createdAt=event.created_at,
+            updatedAt=event.updated_at,
+        )
+        for event in events
+    ]
+
+
+def cancel_owned_event(db: Session, event_uuid: UUID, user_id: int) -> None:
+    """등록자가 올린 행사의 상태만 CANCEL로 전환한다."""
+
+    event = db.scalar(
+        select(Event)
+        .where(Event.uuid == event_uuid, Event.deleted_at.is_(None))
+        .with_for_update()
+    )
+    if event is None:
+        raise NotFoundException(EventErrors.NOT_FOUND)
+    if event.host_id != user_id:
+        raise ForbiddenException(EventErrors.NOT_OWNER)
+    if event.status is EventStatus.CANCEL:
+        db.commit()
+        return
+    if event.status not in (EventStatus.PENDING, EventStatus.APPROVED):
+        raise ConflictException(EventErrors.NOT_CANCELLABLE)
+
+    now = kst_now()
+    event.status = EventStatus.CANCEL
+    event.cancel_reason = "등록자 요청"
+    event.cancelled_at = now
+    event.updated_at = now
+    db.commit()
+
+
+def request_event_edit(
+    db: Session,
+    event_uuid: UUID,
+    user_id: int,
+    request: EventEditRequestBody,
+) -> None:
+    """행사 원본을 바꾸지 않고 검증된 변경분을 승인 대기로 저장한다."""
+
+    event = db.scalar(
+        select(Event)
+        .where(Event.uuid == event_uuid, Event.deleted_at.is_(None))
+        .with_for_update()
+    )
+    if event is None:
+        raise NotFoundException(EventErrors.NOT_FOUND)
+    if event.host_id != user_id:
+        raise ForbiddenException(EventErrors.NOT_OWNER)
+    if event.status not in (EventStatus.PENDING, EventStatus.APPROVED):
+        raise ConflictException(EventErrors.NOT_EDITABLE)
+    if db.scalar(
+        select(EventEditRequestModel.id).where(
+            EventEditRequestModel.event_id == event.id,
+            EventEditRequestModel.status == EventEditRequestStatus.PENDING,
+        )
+    ) is not None:
+        raise ConflictException(EventErrors.EDIT_ALREADY_PENDING)
+
+    fields = request.model_fields_set
+    if {"date", "dueDate"} & fields:
+        event_date = request.date if "date" in fields else event.date
+        due_date = request.dueDate if "dueDate" in fields else event.due_date
+        if due_date < kst_now().date() or due_date >= event_date:
+            raise DomainValidationException(CommonErrors.INVALID_REQUEST)
+    if {"startAt", "endAt"} & fields:
+        start_at = request.startAt if "startAt" in fields else event.start_at
+        end_at = request.endAt if "endAt" in fields else event.end_at
+        if start_at >= end_at:
+            raise DomainValidationException(CommonErrors.INVALID_REQUEST)
+    if "capacity" in fields and request.capacity < event.current_count:
+        raise DomainValidationException(CommonErrors.INVALID_REQUEST)
+
+    changes = request.model_dump(mode="json", exclude_unset=True)
+    if changes.get("detailAddress") == "":
+        changes["detailAddress"] = None
+    db.add(EventEditRequestModel(event_id=event.id, changes=changes))
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise ConflictException(EventErrors.EDIT_ALREADY_PENDING) from error
+
+
 def event_list_item_from_row(row: Mapping[str, Any]) -> EventListItem:
     """SQLAlchemy 매핑 행을 외부 API 응답 모델로 변환한다."""
 
@@ -192,6 +320,47 @@ def event_detail_from_row(row: Mapping[str, Any]) -> EventDetailResponse:
         longitude=row["longitude"],
         kakaoPlaceId=row["kakao_place_id"],
     )
+
+
+def advance_event_lifecycle(db: Session, now: datetime | None = None) -> int:
+    """시간이 지난 승인·대기 이벤트를 종료 상태로 전환한다."""
+
+    current = (now or kst_now()).astimezone(KST)
+    current_time = current.time().replace(tzinfo=None)
+    completed = db.execute(
+        update(Event)
+        .where(
+            Event.status == EventStatus.APPROVED,
+            or_(
+                Event.date < current.date(),
+                and_(
+                    Event.date == current.date(),
+                    Event.end_at <= current_time,
+                ),
+            ),
+        )
+        .values(status=EventStatus.COMPLETED)
+    ).rowcount
+    rejected = db.execute(
+        update(Event)
+        .where(
+            Event.status == EventStatus.PENDING,
+            or_(
+                Event.date < current.date(),
+                and_(
+                    Event.date == current.date(),
+                    Event.start_at <= current_time,
+                ),
+            ),
+        )
+        .values(
+            status=EventStatus.REJECTED,
+            rejected_reason="행사 시작 시각까지 승인되지 않음",
+            rejected_at=current,
+        )
+    ).rowcount
+    db.commit()
+    return completed + rejected
 
 
 @contextmanager
@@ -311,6 +480,7 @@ def _raise_event_cancellation_error(
     db: Session,
     event_uuid: UUID,
     user_id: int,
+    earliest_cancellable_start: datetime,
 ) -> None:
     """참가 삭제 실패 원인을 이벤트, 신청, 기간 순으로 판별한다."""
 
@@ -318,6 +488,7 @@ def _raise_event_cancellation_error(
         select(
             Event.id,
             Event.date,
+            Event.start_at,
             Event.host_id,
             Event.status,
             Event.deleted_at,
@@ -340,7 +511,10 @@ def _raise_event_cancellation_error(
         )
     ) is None:
         raise BadRequestException(EventErrors.APPLICATION_NOT_FOUND)
-    if is_event_expired(event.date):
+    if (
+        datetime.combine(event.date, event.start_at, KST)
+        < earliest_cancellable_start
+    ):
         raise BadRequestException(EventErrors.CANCEL_PERIOD_EXPIRED)
     raise RuntimeError("Event cancellation delete failed unexpectedly")
 
@@ -352,6 +526,7 @@ def cancel_event_application(
 ) -> None:
     """참가 관계 삭제와 이벤트 카운터 감소를 함께 커밋한다."""
 
+    earliest_cancellable_start = kst_now() + timedelta(hours=2)
     event_id = db.scalar(
         select(Event.id)
         .where(
@@ -359,12 +534,24 @@ def cancel_event_application(
             Event.deleted_at.is_(None),
             Event.status == EventStatus.APPROVED,
             or_(Event.host_id.is_(None), Event.host_id != user_id),
-            Event.date >= kst_now().date(),
+            or_(
+                Event.date > earliest_cancellable_start.date(),
+                and_(
+                    Event.date == earliest_cancellable_start.date(),
+                    Event.start_at
+                    >= earliest_cancellable_start.time().replace(tzinfo=None),
+                ),
+            ),
         )
         .with_for_update()
     )
     if event_id is None:
-        _raise_event_cancellation_error(db, event_uuid, user_id)
+        _raise_event_cancellation_error(
+            db,
+            event_uuid,
+            user_id,
+            earliest_cancellable_start,
+        )
 
     participant_id = db.scalar(
         delete(EventParticipant)
@@ -375,7 +562,12 @@ def cancel_event_application(
         .returning(EventParticipant.id)
     )
     if participant_id is None:
-        _raise_event_cancellation_error(db, event_uuid, user_id)
+        _raise_event_cancellation_error(
+            db,
+            event_uuid,
+            user_id,
+            earliest_cancellable_start,
+        )
 
     updated_event_id = db.scalar(
         update(Event)

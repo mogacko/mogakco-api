@@ -22,6 +22,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -39,12 +40,21 @@ class EventCategory(StrEnum):
 
 
 class EventStatus(StrEnum):
-    """DB에 저장하는 이벤트의 심사 및 취소 상태."""
+    """DB에 저장하는 이벤트의 심사 및 생명주기 상태."""
+
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    COMPLETED = "COMPLETED"
+    REJECTED = "REJECTED"
+    CANCEL = "CANCEL"
+
+
+class EventEditRequestStatus(StrEnum):
+    """행사 수정 요청의 처리 상태."""
 
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
-    CANCEL = "CANCEL"
 
 
 class Event(Base):
@@ -67,8 +77,14 @@ class Event(Base):
             name="ck_events_current_count_range",
         ),
         CheckConstraint(
-            "status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCEL')",
+            "status IN "
+            "('PENDING', 'APPROVED', 'COMPLETED', 'REJECTED', 'CANCEL')",
             name="ck_events_status",
+        ),
+        CheckConstraint(
+            "host_id IS NOT NULL "
+            "OR status IN ('COMPLETED', 'REJECTED', 'CANCEL')",
+            name="ck_events_active_host_required",
         ),
         Index(
             "ix_events_region_category_date",
@@ -88,7 +104,7 @@ class Event(Base):
         server_default=text("gen_random_uuid()"),
     )
     region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
-    # 기존 행사는 등록자를 역추적할 수 없으므로 마이그레이션 이후에도 NULL을 허용한다.
+    # 사용자 정보가 영구 삭제된 종료 이벤트의 이력을 보존하기 위해 NULL을 허용한다.
     host_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
@@ -132,6 +148,9 @@ class Event(Base):
     )
     post_image_url: Mapped[str | None] = mapped_column(String(500))
     cancel_reason: Mapped[str | None] = mapped_column(String(200))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_reason: Mapped[str | None] = mapped_column(String(200))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=kst_now, server_default=func.now()
     )
@@ -161,7 +180,48 @@ class EventParticipant(Base):
         ForeignKey("events.id", ondelete="CASCADE")
     )
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE")
+        ForeignKey("users.id", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=kst_now, server_default=func.now()
+    )
+
+
+class EventEditRequest(Base):
+    """관리자 승인 전까지 행사와 분리해 보관하는 수정 요청."""
+
+    __tablename__ = "event_edit_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PENDING', 'APPROVED', 'REJECTED')",
+            name="ck_event_edit_requests_status",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(changes) = 'object' AND changes <> '{}'::jsonb",
+            name="ck_event_edit_requests_changes_object",
+        ),
+        Index(
+            "uq_event_edit_requests_pending_event_id",
+            "event_id",
+            unique=True,
+            postgresql_where=text("status = 'PENDING'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE")
+    )
+    changes: Mapped[dict[str, object]] = mapped_column(JSONB)
+    status: Mapped[EventEditRequestStatus] = mapped_column(
+        Enum(
+            EventEditRequestStatus,
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        default=EventEditRequestStatus.PENDING,
+        server_default=text("'PENDING'"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=kst_now, server_default=func.now()

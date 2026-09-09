@@ -42,6 +42,18 @@ services:
         condition: service_healthy
     restart: "no"
 
+  event-lifecycle:
+    build: .
+    command: python -m app.jobs.event_lifecycle
+    volumes:
+      - .:/app
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mogakco}:${POSTGRES_PASSWORD:-mogakco}@db:5432/${POSTGRES_DB:-mogakco}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:

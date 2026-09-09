@@ -23,16 +23,22 @@ from app.schemas import (
     EventCreateRequest,
     EventCreateResponse,
     EventDetailResponse,
+    EventEditRequestBody,
+    EventEditResponse,
     EventListItem,
+    OwnedEventListItem,
 )
 from app.schemas.error import error_responses
 from app.services.event import (
     apply_to_event,
     cancel_event_application,
+    cancel_owned_event,
     event_detail_from_row,
     event_list_item_from_row,
     event_participation_lock,
+    list_owned_events,
     register_event,
+    request_event_edit,
     select_events_with_stats,
 )
 from app.services.region import enabled_region
@@ -119,6 +125,21 @@ def list_events(
 
 
 @router.get(
+    "/me/events",
+    response_model=list[OwnedEventListItem],
+    responses=error_responses(*_COMMON_ERRORS),
+    summary="내가 올린 행사 조회",
+)
+def get_owned_events(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[OwnedEventListItem]:
+    """현재 사용자가 등록한 모든 저장 상태의 행사를 최신순으로 반환한다."""
+
+    return list_owned_events(db, current_user.id)
+
+
+@router.get(
     "/events/{eventUuid}",
     response_model=EventDetailResponse,
     responses=error_responses(*_COMMON_ERRORS, EventErrors.NOT_FOUND),
@@ -155,6 +176,57 @@ def get_event_detail(
     if row is None:
         raise NotFoundException(EventErrors.NOT_FOUND)
     return event_detail_from_row(row)
+
+
+@router.patch(
+    "/me/events/{eventUuid}",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=EventEditResponse,
+    responses=error_responses(
+        *_COMMON_ERRORS,
+        EventErrors.NOT_FOUND,
+        EventErrors.NOT_OWNER,
+        EventErrors.EDIT_ALREADY_PENDING,
+        EventErrors.NOT_EDITABLE,
+    ),
+    summary="내가 올린 행사 수정 요청",
+)
+def edit_owned_event(
+    eventUuid: UUID,
+    request: EventEditRequestBody,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> EventEditResponse:
+    """행사 변경분을 원본과 분리해 관리자 승인 대기로 저장한다."""
+
+    request_event_edit(db, eventUuid, current_user.id, request)
+    return EventEditResponse(
+        eventUuid=eventUuid,
+        message="행사 수정 요청이 접수되었습니다.",
+    )
+
+
+@router.delete(
+    "/me/events/{eventUuid}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    responses=error_responses(
+        *_COMMON_ERRORS,
+        EventErrors.NOT_FOUND,
+        EventErrors.NOT_OWNER,
+        EventErrors.NOT_CANCELLABLE,
+    ),
+    summary="내가 올린 행사 등록 취소",
+)
+def cancel_registered_event(
+    eventUuid: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Response:
+    """행사 및 참가 기록은 보존하고 저장 상태만 취소로 변경한다."""
+
+    cancel_owned_event(db, eventUuid, current_user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
