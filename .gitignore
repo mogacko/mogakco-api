@@ -4,5 +4,4 @@ __pycache__/
 .env
 .pytest_cache/
 .venv/
-.claude/
 .idea/
