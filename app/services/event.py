@@ -226,8 +226,11 @@ def cancel_owned_event(db: Session, event_uuid: UUID, user_id: int) -> None:
     if event.status not in (EventStatus.PENDING, EventStatus.APPROVED):
         raise ConflictException(EventErrors.NOT_CANCELLABLE)
 
+    now = kst_now()
     event.status = EventStatus.CANCEL
-    event.updated_at = kst_now()
+    event.cancel_reason = "등록자 요청"
+    event.cancelled_at = now
+    event.updated_at = now
     db.commit()
 
 
@@ -350,7 +353,11 @@ def advance_event_lifecycle(db: Session, now: datetime | None = None) -> int:
                 ),
             ),
         )
-        .values(status=EventStatus.REJECTED)
+        .values(
+            status=EventStatus.REJECTED,
+            rejected_reason="행사 시작 시각까지 승인되지 않음",
+            rejected_at=current,
+        )
     ).rowcount
     db.commit()
     return completed + rejected

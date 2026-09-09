@@ -580,8 +580,11 @@ def test_advance_event_lifecycle_uses_event_times(
         db.commit()
 
         assert advance_event_lifecycle(db, now) == 2
+        db.refresh(rejected)
         assert completed.status is EventStatus.COMPLETED
         assert rejected.status is EventStatus.REJECTED
+        assert rejected.rejected_reason == "행사 시작 시각까지 승인되지 않음"
+        assert rejected.rejected_at == now
         assert active.status is EventStatus.APPROVED
         assert advance_event_lifecycle(db, now) == 0
 
@@ -1622,7 +1625,10 @@ def test_owner_cancellation_is_idempotent_and_preserves_event_history(
         assert event.status is EventStatus.CANCEL
         assert event.deleted_at is None
         assert event.current_count == 1
+        assert event.cancel_reason == "등록자 요청"
+        assert event.cancelled_at is not None
         assert event.updated_at is not None
+        assert event.cancelled_at == event.updated_at
         assert db.scalar(
             sa.select(EventParticipant.id).where(
                 EventParticipant.event_id == event_id,
