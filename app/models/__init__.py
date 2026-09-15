@@ -6,6 +6,7 @@ from app.models.community import (
     CommunityPostCategory,
 )
 from app.models.core import Region, User
+from app.models.user import UserAttribute, UserAttributeType
 from app.models.event import (
     Event,
     EventCategory,
@@ -29,4 +30,6 @@ __all__ = [
     "EventStatus",
     "Region",
     "User",
+    "UserAttribute",
+    "UserAttributeType",
 ]

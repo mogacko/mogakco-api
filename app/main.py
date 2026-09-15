@@ -9,12 +9,14 @@ from app.common.errors import CommonErrors
 from app.exceptions import AppException
 from app.routers.community import router as community_router
 from app.routers.event import router as event_router
+from app.routers.user import router as user_router
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="mogakco-api")
 app.include_router(community_router)
 app.include_router(event_router)
+app.include_router(user_router)
 
 
 @app.exception_handler(AppException)

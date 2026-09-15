@@ -59,6 +59,11 @@ def test_initial_migration_creates_final_core_schema() -> None:
         "created_at",
         "updated_at",
         "deleted_at",
+        "field",
+        "bio",
+        "is_staff",
+        "marketing_consent",
+        "marketing_consent_changed_at",
     }
 
     with Session(engine) as session:

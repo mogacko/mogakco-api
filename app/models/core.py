@@ -28,6 +28,18 @@ class User(Base):
     )
     nickname: Mapped[str] = mapped_column(String(30), unique=True)
     region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
+    # 기존 개발 사용자는 분야를 아직 설정하지 않았을 수 있다.
+    field: Mapped[str | None] = mapped_column(String(50))
+    bio: Mapped[str | None] = mapped_column(String(60))
+    is_staff: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    marketing_consent: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    marketing_consent_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=kst_now, server_default=func.now()
     )
