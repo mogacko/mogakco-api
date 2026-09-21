@@ -15,14 +15,19 @@ from app.exceptions import DomainValidationException
 from app.models import User
 from app.schemas.error import error_responses
 from app.schemas.user import (
+    ActivityCounts,
+    MarketingConsentRequest,
+    MarketingConsentResponse,
     MyProfileResponse,
     NicknameAvailabilityResponse,
     NicknameQuery,
     OtherProfileResponse,
     ProfileUpdateRequest,
 )
+from app.services.activity import activity_counts
+from app.services.consent import change_marketing_consent
 from app.services.profile_sources import get_other_profile
-from app.services.user import my_profile, nickname_is_available, update_my_profile
+from app.services.user import check_nickname_availability, my_profile, update_my_profile
 from app.user.errors import UserErrors
 
 router = APIRouter(prefix="/api/v1/users", tags=["내 프로필"])
@@ -42,7 +47,7 @@ def no_query_parameters(request: Request) -> None:
 @router.get(
     "/me",
     response_model=MyProfileResponse,
-    responses=error_responses(*_ERRORS),
+    responses=error_responses(*_ERRORS, UserErrors.CONSENT_CONFIGURATION),
     summary="내 프로필 조회",
     dependencies=[Depends(no_query_parameters)],
 )
@@ -56,7 +61,14 @@ def get_me(
 @router.patch(
     "/me",
     response_model=MyProfileResponse,
-    responses=error_responses(*_ERRORS, UserErrors.NICKNAME_CONFLICT),
+    responses=error_responses(
+        AuthErrors.REQUIRED,
+        CommonErrors.INVALID_REQUEST,
+        CommonErrors.INTERNAL_SERVER_ERROR,
+        UserErrors.UPDATE_DATA_INCONSISTENT,
+        UserErrors.CONSENT_CONFIGURATION,
+        UserErrors.NICKNAME_CONFLICT,
+    ),
     summary="내 프로필 수정",
     dependencies=[Depends(no_query_parameters)],
 )
@@ -81,7 +93,7 @@ def nickname_query(request: Request) -> NicknameQuery:
     "/nickname-availability",
     response_model=NicknameAvailabilityResponse,
     responses=error_responses(
-        UserErrors.INVALID_NICKNAME, CommonErrors.INTERNAL_SERVER_ERROR
+        UserErrors.INVALID_NICKNAME, UserErrors.NICKNAME_LOOKUP_FAILED
     ),
     summary="닉네임 중복 검사",
     openapi_extra={
@@ -101,8 +113,47 @@ def check_nickname(
     db: Annotated[Session, Depends(get_db)],
 ) -> NicknameAvailabilityResponse:
     return NicknameAvailabilityResponse(
-        nickname=query.nickname, available=nickname_is_available(db, query.nickname)
+        nickname=query.nickname,
+        available=check_nickname_availability(db, query.nickname),
     )
+
+
+@router.get(
+    "/me/activity-summary",
+    response_model=ActivityCounts,
+    responses=error_responses(
+        AuthErrors.REQUIRED,
+        CommonErrors.INVALID_REQUEST,
+        UserErrors.ACTIVITY_LOOKUP_FAILED,
+    ),
+    summary="내 활동 요약 조회",
+    dependencies=[Depends(no_query_parameters)],
+)
+def get_my_activity(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ActivityCounts:
+    return activity_counts(db, current_user)
+
+
+@router.patch(
+    "/me/marketing-consent",
+    response_model=MarketingConsentResponse,
+    responses=error_responses(
+        AuthErrors.REQUIRED,
+        CommonErrors.INVALID_REQUEST,
+        UserErrors.CONSENT_CONFIGURATION,
+        UserErrors.CONSENT_SAVE_FAILED,
+    ),
+    summary="마케팅 수신 동의 변경",
+    dependencies=[Depends(no_query_parameters)],
+)
+def patch_marketing_consent(
+    request: MarketingConsentRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> MarketingConsentResponse:
+    return change_marketing_consent(db, current_user.uuid, request.marketingAgreed)
 
 
 @router.get(

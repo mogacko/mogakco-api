@@ -108,7 +108,7 @@ class ProfileUpdateRequest(BaseModel):
         return self
 
 
-class PublicProfile(BaseModel):
+class ProfileDetails(BaseModel):
     nickname: str
     activityRegionName: str
     field: str
@@ -118,16 +118,35 @@ class PublicProfile(BaseModel):
     interests: list[str]
     profileImageUrl: str | None
     joinedAt: datetime
-    isStaff: bool
 
 
-class MyProfileResponse(PublicProfile):
+class MyProfileResponse(ProfileDetails):
     userUuid: UUID
     marketingConsent: bool
     marketingConsentChangedAt: datetime | None
+
+
+class ActivityCounts(BaseModel):
+    joinedMeetingCount: int = Field(ge=0)
+    appliedEventCount: int = Field(ge=0)
+    authoredPostCount: int = Field(ge=0)
+
+
+class PublicProfile(ProfileDetails, ActivityCounts):
+    pass
 
 
 class OtherProfileResponse(BaseModel):
     userUuid: UUID
     isBlocked: bool
     profile: PublicProfile | None
+
+
+class MarketingConsentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    marketingAgreed: bool
+
+
+class MarketingConsentResponse(BaseModel):
+    marketingAgreed: bool
+    changedAt: datetime | None

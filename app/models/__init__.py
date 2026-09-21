@@ -5,8 +5,8 @@ from app.models.community import (
     CommunityPostBoard,
     CommunityPostCategory,
 )
+from app.models.consent import MarketingConsentHistory, TermAgreement
 from app.models.core import Region, User
-from app.models.user import UserAttribute, UserAttributeType
 from app.models.event import (
     Event,
     EventCategory,
@@ -15,6 +15,7 @@ from app.models.event import (
     EventParticipant,
     EventStatus,
 )
+from app.models.user import UserAttribute, UserAttributeType
 
 __all__ = [
     "Comment",
@@ -28,7 +29,9 @@ __all__ = [
     "EventEditRequestStatus",
     "EventParticipant",
     "EventStatus",
+    "MarketingConsentHistory",
     "Region",
+    "TermAgreement",
     "User",
     "UserAttribute",
     "UserAttributeType",

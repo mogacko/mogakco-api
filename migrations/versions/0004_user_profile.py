@@ -1,4 +1,4 @@
-"""Add profile fields and per-user attributes.
+"""Add profile fields, user attributes, and marketing consent history.
 
 Revision ID: 0004_user_profile
 Revises: 0003_event_owner
@@ -72,8 +72,56 @@ def upgrade() -> None:
         postgresql_where=sa.text("type = 'AFFILIATION'"),
     )
 
+    op.create_table(
+        "term_agreements",
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column(
+            "user_id",
+            sa.Integer(),
+            sa.ForeignKey("users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("type", sa.String(30), nullable=False),
+        sa.Column("version", sa.String(50), nullable=False),
+        sa.Column("is_required", sa.Boolean(), nullable=False),
+        sa.Column("is_agreed", sa.Boolean(), nullable=False),
+        sa.Column("notified_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("signed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.UniqueConstraint("user_id", "type", "version"),
+    )
+    op.create_table(
+        "marketing_consent_history",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column(
+            "user_id",
+            sa.Integer(),
+            sa.ForeignKey("users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("type", sa.String(30), nullable=False),
+        sa.Column("version", sa.String(50), nullable=False),
+        sa.Column("previous_is_agreed", sa.Boolean(), nullable=True),
+        sa.Column("is_agreed", sa.Boolean(), nullable=False),
+        sa.Column("changed_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "type = 'MARKETING'", name="ck_marketing_consent_history_type"
+        ),
+        sa.CheckConstraint(
+            "previous_is_agreed IS NULL OR previous_is_agreed <> is_agreed",
+            name="ck_marketing_consent_history_changed",
+        ),
+    )
+    op.create_index(
+        "ix_marketing_consent_history_user_changed",
+        "marketing_consent_history",
+        ["user_id", "changed_at"],
+    )
+    # 기존 users 동의 값은 보존한다. 확인되지 않은 과거 버전/이력을 생성하지 않는다.
+
 
 def downgrade() -> None:
+    op.drop_table("marketing_consent_history")
+    op.drop_table("term_agreements")
     op.drop_table("user_attributes")
     for name in (
         "marketing_consent_changed_at",

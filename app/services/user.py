@@ -3,7 +3,7 @@
 from uuid import UUID
 
 from sqlalchemy import delete, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.auth.errors import AuthErrors
@@ -19,6 +19,7 @@ from app.schemas.user import (
     normalized_key,
     sorted_values,
 )
+from app.services.consent import marketing_state
 from app.time import KST
 from app.user.errors import UserErrors
 
@@ -33,7 +34,14 @@ def nickname_is_available(
     return db.scalar(query) is None
 
 
-def my_profile(db: Session, user: User) -> MyProfileResponse:
+def check_nickname_availability(db: Session, nickname: str) -> bool:
+    try:
+        return nickname_is_available(db, nickname)
+    except SQLAlchemyError as error:
+        raise InternalServerException(UserErrors.NICKNAME_LOOKUP_FAILED) from error
+
+
+def my_profile(db: Session, user: User, *, updating: bool = False) -> MyProfileResponse:
     region_name = db.scalar(select(Region.name).where(Region.id == user.region_id))
     if (
         not user.nickname
@@ -42,7 +50,11 @@ def my_profile(db: Session, user: User) -> MyProfileResponse:
         or not region_name
         or user.created_at is None
     ):
-        raise InternalServerException(UserErrors.DATA_INCONSISTENT)
+        raise InternalServerException(
+            UserErrors.UPDATE_DATA_INCONSISTENT
+            if updating
+            else UserErrors.DATA_INCONSISTENT
+        )
     attributes = db.scalars(
         select(UserAttribute)
         .where(UserAttribute.user_id == user.id)
@@ -51,6 +63,7 @@ def my_profile(db: Session, user: User) -> MyProfileResponse:
     values = {kind: [] for kind in UserAttributeType}
     for attribute in attributes:
         values[attribute.type].append(attribute.value)
+    marketing_consent, marketing_changed_at = marketing_state(db, user)
     return MyProfileResponse(
         userUuid=user.uuid,
         nickname=user.nickname,
@@ -64,11 +77,8 @@ def my_profile(db: Session, user: User) -> MyProfileResponse:
         interests=sorted_values(values[UserAttributeType.INTEREST]),
         profileImageUrl=None,
         joinedAt=user.created_at.astimezone(KST),
-        isStaff=user.is_staff,
-        marketingConsent=user.marketing_consent,
-        marketingConsentChangedAt=user.marketing_consent_changed_at.astimezone(KST)
-        if user.marketing_consent_changed_at
-        else None,
+        marketingConsent=marketing_consent,
+        marketingConsentChangedAt=marketing_changed_at,
     )
 
 
@@ -115,7 +125,7 @@ def update_my_profile(
                     )
                 )
         db.flush()
-        response = my_profile(db, user)
+        response = my_profile(db, user, updating=True)
         db.commit()
         return response
     except IntegrityError as error:

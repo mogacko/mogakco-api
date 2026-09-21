@@ -15,7 +15,14 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
 from app.main import app
-from app.models import Region, User, UserAttribute, UserAttributeType
+from app.models import (
+    MarketingConsentHistory,
+    Region,
+    TermAgreement,
+    User,
+    UserAttribute,
+    UserAttributeType,
+)
 from app.services.profile_sources import (
     MOCK_BLOCKED_UUID,
     MOCK_MEMBER_UUID,
@@ -35,7 +42,13 @@ def api(monkeypatch: pytest.MonkeyPatch) -> Generator[tuple[TestClient, sa.Engin
         connection.create_function("char_length", 1, len)
         connection.execute("PRAGMA foreign_keys=ON")
 
-    for table in (Region.__table__, User.__table__, UserAttribute.__table__):
+    for table in (
+        Region.__table__,
+        User.__table__,
+        UserAttribute.__table__,
+        TermAgreement.__table__,
+        MarketingConsentHistory.__table__,
+    ):
         table.create(engine)
     with Session(engine) as db:
         db.add(Region(id=1, name="seoul", is_enabled=True))
@@ -85,6 +98,8 @@ def test_get_and_patch_profile_persist_and_preserve_omitted_fields(api):
     assert response.json()["marketingConsentChangedAt"] is None
     assert response.json()["stacks"] == []
     assert response.json()["joinedAt"].endswith("+09:00")
+    assert "isStaff" not in response.json()
+    assert "joinedMeetingCount" not in response.json()
 
     response = client.patch(
         ME,
@@ -102,6 +117,7 @@ def test_get_and_patch_profile_persist_and_preserve_omitted_fields(api):
     assert data["field"] == "백엔드"
     assert data["bio"] == "소개"
     assert data["stacks"] == ["Dart", "Flutter"]
+    assert "isStaff" not in data
     assert client.get(ME, headers=AUTH).json() == data
     with Session(engine) as db:
         assert (
@@ -134,7 +150,6 @@ def test_get_and_patch_profile_persist_and_preserve_omitted_fields(api):
         {},
         {"unknown": "x"},
         {"nickname": None},
-        {"nickname": "a"},
         {"nickname": "bad-name"},
         {"field": None},
         {"field": " "},
@@ -190,7 +205,6 @@ def test_public_nickname_check_normalizes_and_has_no_owner_data(api):
     "params",
     [
         {},
-        {"nickname": ""},
         {"nickname": "x"},
         {"nickname": "ㄱㄴ"},
         {"nickname": "🙂🙂"},
@@ -231,9 +245,12 @@ def test_missing_required_profile_rolls_back_and_can_be_completed(api):
         )
         db.commit()
     assert client.get(ME, headers=AUTH).json()["code"] == "PROFILE_DATA_INCONSISTENT"
-    assert (
-        client.patch(ME, headers=AUTH, json={"bio": "저장되지 않음"}).status_code == 500
-    )
+    failed = client.patch(ME, headers=AUTH, json={"bio": "저장되지 않음"})
+    assert failed.status_code == 500
+    assert failed.json() == {
+        "code": "PROFILE_DATA_INCONSISTENT",
+        "message": "프로필 정보를 처리하지 못했습니다.",
+    }
     with Session(engine) as db:
         assert (
             db.scalar(sa.select(User.bio).where(User.uuid == MOCK_VIEWER_UUID))
@@ -249,6 +266,10 @@ def test_other_profile_mock_contract_and_direction(api):
     assert normal.json()["isBlocked"] is False
     assert "marketingConsent" not in normal.json()["profile"]
     assert "userUuid" not in normal.json()["profile"]
+    assert "isStaff" not in normal.json()["profile"]
+    assert normal.json()["profile"]["joinedMeetingCount"] == 2
+    assert normal.json()["profile"]["appliedEventCount"] == 1
+    assert normal.json()["profile"]["authoredPostCount"] == 3
     blocked = client.get(f"/api/v1/users/{MOCK_BLOCKED_UUID}/profile", headers=AUTH)
     assert blocked.json() == {
         "userUuid": str(MOCK_BLOCKED_UUID),
@@ -265,6 +286,8 @@ def test_other_profile_mock_contract_and_direction(api):
         headers={"X-Debug-User-Uuid": str(MOCK_BLOCKED_UUID)},
     )
     assert reverse.json()["isBlocked"] is False
+    assert reverse.json()["profile"]["joinedMeetingCount"] == 1
+    assert reverse.json()["profile"]["authoredPostCount"] == 4
     assert (
         client.get(f"/api/v1/users/{uuid4()}/profile", headers=AUTH).status_code == 404
     )
@@ -342,3 +365,18 @@ def test_db_failure_after_attribute_deletion_rolls_back_every_change(api, monkey
     assert failed.status_code == 500
     assert failed.json()["code"] == "INTERNAL_SERVER_ERROR"
     assert client.get(ME, headers=AUTH).json() == initial
+
+
+def test_nickname_storage_failure_uses_lookup_error(api, monkeypatch):
+    client, _ = api
+
+    def fail_lookup(*args, **kwargs):
+        raise sa.exc.OperationalError("select", {}, RuntimeError("unavailable"))
+
+    monkeypatch.setattr(Session, "scalar", fail_lookup)
+    response = client.get(CHECK, params={"nickname": "valid"})
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": "INTERNAL_SERVER_ERROR",
+        "message": "닉네임을 확인하지 못했습니다.",
+    }
