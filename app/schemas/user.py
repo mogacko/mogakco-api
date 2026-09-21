@@ -122,7 +122,9 @@ class ProfileDetails(BaseModel):
 
 class MyProfileResponse(ProfileDetails):
     userUuid: UUID
-    marketingConsent: bool
+    marketingConsent: bool | None = Field(
+        description="동의 여부. 약관 조회 실패 시 null이며 미동의(false)와 구분한다."
+    )
     marketingConsentChangedAt: datetime | None
 
 

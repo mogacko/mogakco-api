@@ -47,7 +47,7 @@ def no_query_parameters(request: Request) -> None:
 @router.get(
     "/me",
     response_model=MyProfileResponse,
-    responses=error_responses(*_ERRORS, UserErrors.CONSENT_CONFIGURATION),
+    responses=error_responses(*_ERRORS),
     summary="내 프로필 조회",
     dependencies=[Depends(no_query_parameters)],
 )
@@ -66,7 +66,6 @@ def get_me(
         CommonErrors.INVALID_REQUEST,
         CommonErrors.INTERNAL_SERVER_ERROR,
         UserErrors.UPDATE_DATA_INCONSISTENT,
-        UserErrors.CONSENT_CONFIGURATION,
         UserErrors.NICKNAME_CONFLICT,
     ),
     summary="내 프로필 수정",

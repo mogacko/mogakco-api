@@ -217,3 +217,50 @@ def test_history_failure_rolls_back_existing_consent_and_time(api):
             db.scalar(sa.select(sa.func.count()).select_from(MarketingConsentHistory))
             == 1
         )
+
+
+@pytest.mark.parametrize("failure", ["invalid_version", "missing_table"])
+def test_consent_read_failure_does_not_block_profile_or_its_changes(api, failure):
+    client, engine = api
+    if failure == "missing_table":
+        TermAgreement.__table__.drop(engine)
+    else:
+        with Session(engine) as db:
+            user_id = db.scalar(sa.select(User.id).where(User.uuid == MOCK_VIEWER_UUID))
+            db.add(
+                TermAgreement(
+                    user_id=user_id, type="MARKETING", version="invalid", is_agreed=True
+                )
+            )
+            db.commit()
+
+    profile = client.get(ME, headers=AUTH)
+    assert profile.status_code == 200
+    assert profile.json()["nickname"] == "evan"
+    assert profile.json()["marketingConsent"] is None
+    assert profile.json()["marketingConsentChangedAt"] is None
+
+    patched = client.patch(
+        ME, headers=AUTH, json={"bio": "저장됨", "stacks": ["Python"]}
+    )
+    assert patched.status_code == 200
+    assert patched.json()["marketingConsent"] is None
+    assert patched.json()["marketingConsentChangedAt"] is None
+    reloaded = client.get(ME, headers=AUTH)
+    assert reloaded.json()["bio"] == "저장됨"
+    assert reloaded.json()["stacks"] == ["Python"]
+
+    failed_change = client.patch(URL, headers=AUTH, json={"marketingAgreed": False})
+    assert failed_change.status_code == 500
+    assert failed_change.json()["code"] == (
+        "CONFIGURATION_ERROR"
+        if failure == "invalid_version"
+        else "INTERNAL_SERVER_ERROR"
+    )
+    with Session(engine) as db:
+        assert (
+            db.scalar(sa.select(sa.func.count()).select_from(MarketingConsentHistory))
+            == 0
+        )
+        if failure == "invalid_version":
+            assert db.scalar(sa.select(TermAgreement.is_agreed)) is True

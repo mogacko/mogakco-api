@@ -1,5 +1,6 @@
 """동일 회원의 동의 변경을 직렬화하고 현재 상태와 이력을 함께 저장한다."""
 
+import logging
 import re
 from datetime import datetime
 from uuid import UUID
@@ -18,6 +19,7 @@ from app.user.errors import UserErrors
 # TERM_AGREEMENT 명세의 초기 문자열. 버전 선택 정책 확정 시 선택 로직을 교체한다.
 INITIAL_MARKETING_VERSION = "1.0.0"
 MARKETING = "MARKETING"
+logger = logging.getLogger(__name__)
 
 
 def current_marketing_agreement(db: Session, user_id: int) -> TermAgreement | None:
@@ -45,12 +47,22 @@ def consent_time(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=KST) if value.tzinfo is None else value.astimezone(KST)
 
 
-def marketing_state(db: Session, user: User) -> tuple[bool, datetime | None]:
-    agreement = current_marketing_agreement(db, user.id)
-    if agreement is not None:
-        return agreement.is_agreed, consent_time(agreement.signed_at)
-    # 이전 프로필 구현의 값은 첫 실제 변경까지 보존한다. 과거 이력은 만들지 않는다.
-    return user.marketing_consent, consent_time(user.marketing_consent_changed_at)
+def marketing_state(db: Session, user: User) -> tuple[bool | None, datetime | None]:
+    # 프로필 쓰기 오류는 약관 조회 실패로 숨기지 않는다.
+    db.flush()
+    try:
+        # PostgreSQL의 조회 오류가 바깥 프로필 수정 트랜잭션을 중단하지 않게 격리한다.
+        with db.begin_nested():
+            agreement = current_marketing_agreement(db, user.id)
+            if agreement is not None:
+                return agreement.is_agreed, consent_time(agreement.signed_at)
+            # 기존 값은 첫 실제 변경까지 보존하며 과거 이력을 만들지 않는다.
+            return user.marketing_consent, consent_time(
+                user.marketing_consent_changed_at
+            )
+    except (SQLAlchemyError, InternalServerException):
+        logger.exception("Marketing consent unavailable while reading profile")
+        return None, None
 
 
 def change_marketing_consent(
